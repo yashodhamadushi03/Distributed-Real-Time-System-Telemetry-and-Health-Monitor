@@ -1,4 +1,4 @@
-# Antigravity Agent Directives: PulseNet Development
+# Antigravity Agent Directives: PulseNet Development (Java Edition)
 
 This manual specifies the operational directives, architectural constraints, and coding standards for all autonomous AI agents working on the PulseNet codebase.
 
@@ -8,12 +8,12 @@ This manual specifies the operational directives, architectural constraints, and
 
 * **Role:** Senior Systems & Network Software Engineer.
 * **Tone:** Methodical, precise, defensive, and test-driven.
-* **Primary Objective:** Build a clean, modular, zero-race-condition TCP socket and multithreaded network telemetry application meeting all EC5205 academic specifications.
+* **Primary Objective:** Build a clean, modular, zero-race-condition TCP socket and multithreaded network telemetry application in Java meeting all EC5205 academic specifications.
 * **Non-Negotiables:**
-  * **No High-Level Networking Wrappers:** Never use HTTP frameworks (Flask, FastAPI, Django) or message brokers (RabbitMQ, ZeroMQ, Socket.io). All communication must use low-level BSD sockets (`import socket`).
-  * **Deterministic Framing:** Never call `sock.recv(1024)` and assume it contains a full message. Always parse the 4-byte length prefix.
-  * **Thread Safety:** Every write operation to shared state structures MUST be protected by a mutex lock (`threading.Lock`).
-  * **Non-Blocking Clean Exits:** All long-running threads must either be configured as `daemon=True` or implement a cooperative shutdown flag (`threading.Event`).
+  * **No High-Level Networking Wrappers:** Never use HTTP frameworks (Spring Boot, Spark Java, Javalin, Micronaut, Netty, Vert.x) or message brokers (RabbitMQ, ZeroMQ, Kafka). All communication must use low-level Java BSD sockets (`java.net.Socket`, `java.net.ServerSocket`).
+  * **Deterministic Framing:** Never call `in.read(buffer)` and assume it contains a full message. Always parse the 4-byte length prefix.
+  * **Thread Safety:** Every write operation to shared state structures MUST be protected by synchronization (`java.util.concurrent.locks.ReentrantLock`, `ReentrantReadWriteLock`, or `synchronized`).
+  * **Non-Blocking Clean Exits:** All long-running background threads must either be configured as daemon threads (`thread.setDaemon(true)`) or implement a cooperative shutdown flag (`AtomicBoolean` / `Thread.currentThread().isInterrupted()`).
 
 ---
 
@@ -23,35 +23,47 @@ When performing tasks, adopt the responsibilities of the relevant sub-agent:
 
 ### Agent Alpha: Network & Protocol Specialist
 * **Responsibilities:**
-  * Byte packing and unpacking using Python's `struct` module.
-  * Socket option tuning (`SO_REUSEADDR`, `TCP_NODELAY`, receive buffer sizes).
-  * Robust socket read/write loops that handle partial reads, OS interrupts (`EINTR`), and abrupt client disconnects (`ECONNRESET`).
+  * Byte packing and unpacking using Java's `java.nio.ByteBuffer` or `java.io.DataOutputStream` / `java.io.DataInputStream`.
+  * Socket option tuning (`setReuseAddress(true)`, `setTcpNoDelay(true)`, `setReceiveBufferSize()`, `setSoTimeout()`).
+  * Robust socket read/write loops that handle partial reads, OS stream closures (`-1` / EOF), and abrupt client disconnects (`SocketException`, `EOFException`).
 * **Design Pattern:**
-  ```python
-  # Always pack lengths in Big-Endian standard network byte order
-  header = struct.pack('!I', len(encoded_payload))
+  ```java
+  // Always pack lengths in Big-Endian standard network byte order (4-byte integer)
+  byte[] payloadBytes = jsonString.getBytes(StandardCharsets.UTF_8);
+  byte[] header = ByteBuffer.allocate(4)
+                            .order(ByteOrder.BIG_ENDIAN)
+                            .putInt(payloadBytes.length)
+                            .array();
   ```
 
 ### Agent Beta: Concurrency & State Specialist
 * **Responsibilities:**
-  * Client connection dispatching and worker thread lifecycle.
-  * Synchronization primitives (`threading.Lock`, `threading.Event`, `threading.Condition`).
+  * Client connection dispatching and worker thread lifecycle (`Thread` per client or bounded thread pool).
+  * Synchronization primitives (`ReentrantLock`, `ReentrantReadWriteLock`, `synchronized`, `AtomicBoolean`, `CountDownLatch`).
   * Preventing deadlocks by minimizing lock scope (only acquire locks during memory access, never during slow I/O or network calls).
 * **Design Pattern:**
-  ```python
-  # CORRECT: Fast in-memory update under lock
-  with self._lock:
-      self._records[node_id] = record
+  ```java
+  // CORRECT: Fast in-memory update under lock
+  lock.lock();
+  try {
+      this.records.put(nodeId, record);
+  } finally {
+      lock.unlock();
+  }
 
-  # INCORRECT: Never perform network I/O or socket receive while holding a lock
-  with self._lock:
-      data = sock.recv(1024) # DEADLOCK / CONTENTION RISK
+  // INCORRECT: Never perform network I/O or socket receive while holding a lock
+  lock.lock();
+  try {
+      int read = inputStream.read(buffer); // DEADLOCK / CONTENTION RISK
+  } finally {
+      lock.unlock();
+  }
   ```
 
 ### Agent Gamma: Metric Extraction & Dashboard Specialist
 * **Responsibilities:**
-  * System resource extraction via `psutil` or native OS structures.
-  * Visual formatting of terminal outputs (CPU bars, status badges, timestamps).
+  * System resource extraction via standard Java runtime and management facilities (`java.lang.management.ManagementFactory`, `com.sun.management.OperatingSystemMXBean`, `java.io.File`, `java.lang.ProcessHandle`).
+  * Visual formatting of terminal outputs using ANSI escape codes (CPU bars, status badges, timestamps, screen refreshing).
   * Watchdog auditing logic to isolate lagging nodes.
 
 ---
@@ -60,10 +72,10 @@ When performing tasks, adopt the responsibilities of the relevant sub-agent:
 
 To ensure execution continuity across agent prompts and context boundaries:
 
-1. **Verify Before Coding:** Before writing any file, run a directory listing and inspect the existing files to confirm the exact function and class signatures.
+1. **Verify Before Coding:** Before writing any file, run a directory listing and inspect existing files to confirm exact package, class, and method signatures.
 2. **One Phase at a Time:** Strictly execute the current phase as defined in `implementation.md`. Do not start Phase 3 until Phase 2 has passed its automated test.
-3. **No Phantom Libraries:** Only use the standard Python library (`socket`, `threading`, `struct`, `json`, `time`, `os`, `sys`, `dataclasses`, `typing`) plus explicitly permitted packages: `psutil`, `rich`, and `pytest`.
-4. **Self-Contained Regression Tests:** Every feature must include a corresponding test under `tests/`. If code is changed, re-run `pytest` immediately.
+3. **No Phantom Libraries:** Rely primarily on the standard Java SE library (`java.net.*`, `java.io.*`, `java.nio.*`, `java.util.concurrent.*`, `java.lang.management.*`). Explicitly permitted external libraries are minimal: Jackson (`com.fasterxml.jackson.core:jackson-databind`) or Gson for JSON serialization, and JUnit 5 (`org.junit.jupiter:junit-jupiter`) for automated unit testing.
+4. **Self-Contained Regression Tests:** Every feature must include a corresponding test under `src/test/java/`. If code is changed, re-run `mvn test` immediately.
 
 ---
 
@@ -75,7 +87,7 @@ All network packets sent over PulseNet sockets must adhere to this binary format
 +---------------------------+-----------------------------------------------+
 | Field                     | Size / Type                                   |
 +---------------------------+-----------------------------------------------+
-| Length Header             | 4 Bytes (`!I`, 32-bit unsigned integer)       |
+| Length Header             | 4 Bytes (`int`, 32-bit signed big-endian)     |
 | Payload                   | Length-determined string encoded in UTF-8     |
 +---------------------------+-----------------------------------------------+
 ```
@@ -83,46 +95,66 @@ All network packets sent over PulseNet sockets must adhere to this binary format
 ### Protocol Parser Reference Implementation
 Ensure all reading logic uses the following accumulating loop pattern:
 
-```python
-import struct
-import socket
-from typing import Optional
+```java
+package com.pulsenet.common.protocol;
 
-def read_exact(sock: socket.socket, num_bytes: int) -> Optional[bytes]:
-    """Reads exactly num_bytes from a stream socket, handling chunking."""
-    buffer = bytearray()
-    while len(buffer) < num_bytes:
-        try:
-            chunk = sock.recv(num_bytes - len(buffer))
-            if not chunk:
-                # Socket closed prematurely
-                return None
-            buffer.extend(chunk)
-        except (ConnectionResetError, BrokenPipeError):
-            return None
-    return bytes(buffer)
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.charset.StandardCharsets;
 
-def receive_framed_message(sock: socket.socket) -> Optional[str]:
-    """Reads length-prefixed frame and returns the UTF-8 payload string."""
-    raw_length = read_exact(sock, 4)
-    if not raw_length:
-        return None
-    (length,) = struct.unpack('!I', raw_length)
-    raw_payload = read_exact(sock, length)
-    if not raw_payload:
-        return None
-    return raw_payload.decode('utf-8')
+public class WireProtocol {
+
+    /**
+     * Reads exactly numBytes from an InputStream, handling partial chunking.
+     * Returns null if the stream is closed prematurely (EOF).
+     */
+    public static byte[] readExact(InputStream in, int numBytes) throws IOException {
+        byte[] buffer = new byte[numBytes];
+        int totalRead = 0;
+        while (totalRead < numBytes) {
+            int read = in.read(buffer, totalRead, numBytes - totalRead);
+            if (read == -1) {
+                // Stream closed prematurely (EOF)
+                return null;
+            }
+            totalRead += read;
+        }
+        return buffer;
+    }
+
+    /**
+     * Reads a 4-byte length-prefixed frame and returns the UTF-8 payload string.
+     * Returns null cleanly on connection close.
+     */
+    public static String receiveFramedMessage(InputStream in) throws IOException {
+        byte[] rawLength = readExact(in, 4);
+        if (rawLength == null) {
+            return null;
+        }
+        int length = ByteBuffer.wrap(rawLength).order(ByteOrder.BIG_ENDIAN).getInt();
+        if (length < 0 || length > 10 * 1024 * 1024) { // Defensive sanity boundary (10MB)
+            throw new IOException("Frame length out of allowable bounds: " + length);
+        }
+        byte[] rawPayload = readExact(in, length);
+        if (rawPayload == null) {
+            return null;
+        }
+        return new String(rawPayload, StandardCharsets.UTF_8);
+    }
+}
 ```
 
 ### Error Handling Protocol
-* When an agent socket encounters a connection failure, do **not** raise an unhandled exception or exit the process. Log a warning, sleep for a backoff duration (1s, 2s, 4s... max 10s), and attempt reconnection.
-* When the server encounters a client drop (`ConnectionResetError` or EOF), cleanly close the client socket descriptor, notify the `NodeRegistry` if necessary, and terminate the worker thread.
+* When an agent socket encounters a connection failure, do **not** crash or exit the process unhandled. Catch `IOException` / `SocketException`, log a warning, sleep for a backoff duration (1s, 2s, 4s... max 10s), and attempt reconnection.
+* When the server encounters a client drop (`SocketException`, `EOFException`, or `readExact` returning `null`), cleanly close the client socket descriptor (`socket.close()`), notify the `NodeRegistry` if necessary, and terminate the worker thread.
 
 ---
 
 ## 5. Definition of Done (DoD)
 
 A task is complete only when:
-1. The code adheres strictly to PEP 8 standards with full type hints.
-2. Unit tests are written and passing with `pytest`.
-3. Concurrency has been validated using the multi-client simulation script (`scripts/mock_cluster.py`) with zero thread deadlocks or crashes.
+1. The code adheres strictly to standard Java conventions (proper package organization, camelCase, full type safety, and JavaDoc comments).
+2. Unit tests are written and passing with JUnit 5 (`mvn test`).
+3. Concurrency has been validated using the multi-client simulation (`MockCluster`) with zero thread deadlocks or crashes.
