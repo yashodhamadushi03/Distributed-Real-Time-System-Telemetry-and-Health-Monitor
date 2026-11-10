@@ -76,11 +76,11 @@ In enterprise infrastructures and distributed compute clusters, systems administ
 ### Sockets & Wire Protocol
 * **Stream-Oriented TCP Handling:** TCP is a byte-stream protocol, not a message-oriented protocol. A single `InputStream.read()` call may return partial frames or multiple concatenated packets. PulseNet implements a strict **Length-Prefixed Framing Protocol**:
   $$\text{Frame} = [\text{4-Byte Big-Endian Integer (Payload Length)}] + [\text{UTF-8 JSON Payload}]$$
-* **Socket Lifecycle Management:** Explicit configuration of `SO_REUSEADDR` (`socket.setReuseAddress(true)`), `TCP_NODELAY` (`socket.setTcpNoDelay(true)`), graceful teardown using socket shutdowns (`shutdownInput()`, `shutdownOutput()`, `close()`), and configurable read timeouts (`setSoTimeout()`).
+* **Socket Lifecycle Management:** Explicit configuration of `SO_REUSEADDR` (`socket.setReuseAddress(true)`), `TCP_NODELAY` (`socket.setTcpNoDelay(true)`), graceful teardown using socket shutdowns (`shutdownInput()`, `shutdownOutput()`, `close()`), and configurable timeouts.
 
 ### Multithreading & Synchronization
 * **Concurrent Ingestion:** The server maintains an accept loop on the main thread, dispatching incoming client connections to dedicated worker threads (`ClientHandler`).
-* **Shared State Concurrency:** All worker threads write updates to a centralized `NodeRegistry`. Thread collisions and race conditions are mitigated using a mutual exclusion lock (`java.util.concurrent.locks.ReentrantLock` or `synchronized`).
+* **Shared State Concurrency:** All worker threads write updates to a centralized `NodeRegistry`. Thread collisions and race conditions are mitigated using a mutual exclusion lock (`java.util.concurrent.locks.ReentrantLock`).
 * **Watchdog Supervision:** A decoupled daemon thread (`thread.setDaemon(true)`) audits heartbeat intervals ($T_{\text{last\_seen}}$) every second. If $T_{\text{current}} - T_{\text{last\_seen}} > \text{TIMEOUT}$, the node status transitions to `WARNING` or `OFFLINE`.
 
 ---
@@ -89,12 +89,13 @@ In enterprise infrastructures and distributed compute clusters, systems administ
 
 ```
 pulsenet/
-├── pom.xml                   # Maven project dependencies & build lifecycle
-├── README.md                 # Project specifications & academic documentation
-├── implementation.md         # Phased execution checklist for agent workflows
-├── agents.md                 # Operational prompt engineering and system directives
-├── run_demo.sh               # Shell script executing server + multiple local agents
-├── run_demo.bat              # Batch script executing server + multiple local agents (Windows)
+├── pom.xml                   # Maven dependencies, packaging & build lifecycle
+├── README.md                 # Project architecture & user guide
+├── implementation.md         # Phased execution checklist & test gates
+├── agents.md                 # Antigravity agent system directives
+├── run_demo.ps1              # One-click PowerShell demo launcher (Windows)
+├── run_demo.bat              # One-click Batch demo launcher (Windows)
+├── run_demo.sh               # One-click Shell demo launcher (Linux/macOS)
 │
 └── src/
     ├── main/
@@ -103,32 +104,30 @@ pulsenet/
     │           └── pulsenet/
     │               ├── common/
     │               │   ├── model/
-    │               │   │   ├── TelemetryPayload.java # Telemetry POJO / JSON representation
-    │               │   │   └── NodeRecord.java       # Server-side registry node representation
+    │               │   │   └── TelemetryPayload.java   # Telemetry POJO / JSON DTO
     │               │   └── protocol/
-    │               │       └── WireProtocol.java     # Length-prefixed binary framing parser
+    │               │       └── WireProtocol.java       # Length-prefixed framing engine
     │               │
     │               ├── agent/
-    │               │   ├── collector/
-    │               │   │   └── MetricCollector.java  # Host metric sampler (CPU, RAM, Disk, PIDs)
-    │               │   ├── client/
-    │               │   │   └── TelemetryAgent.java   # Resilient TCP socket client with auto-reconnect
-    │               │   └── AgentMain.java            # CLI entry point for telemetry agent
+    │               │   ├── MetricCollector.java        # System metric sampler (CPU, RAM, Disk, PIDs)
+    │               │   ├── TelemetryAgent.java         # Resilient TCP socket client with auto-reconnect
+    │               │   └── AgentMain.java              # CLI entry point for telemetry agent
     │               │
     │               ├── server/
     │               │   ├── registry/
-    │               │   │   └── NodeRegistry.java     # Thread-safe in-memory metrics storage & mutex
+    │               │   │   ├── NodeRecord.java         # Server-side registry node representation
+    │               │   │   └── NodeRegistry.java       # Thread-safe in-memory store (ReentrantLock)
     │               │   ├── network/
-    │               │   │   ├── TelemetryServer.java  # Multithreaded TCP ServerSocket listener
-    │               │   │   └── ClientHandler.java    # Per-client socket reader worker thread
+    │               │   │   ├── TelemetryServer.java    # Multithreaded TCP ServerSocket listener
+    │               │   │   └── ClientHandler.java      # Per-client socket reader worker thread
     │               │   ├── watchdog/
-    │               │   │   └── WatchdogSupervisor.java # Heartbeat supervisor checking for node timeouts
+    │               │   │   └── WatchdogSupervisor.java # Heartbeat watchdog daemon auditing timeouts
     │               │   ├── dashboard/
-    │               │   │   └── DashboardRenderer.java  # Terminal UI renderer (ANSI live display)
-    │               │   └── ServerMain.java           # CLI entry point for aggregator server
+    │               │   │   └── DashboardRenderer.java  # ANSI live terminal UI renderer
+    │               │   └── ServerMain.java             # CLI entry point for aggregator server
     │               │
     │               └── simulation/
-    │                   └── MockCluster.java          # Spawns N simulated agent nodes with varying loads
+    │                   └── MockCluster.java            # Spawns N simulated agents with chaos injection
     │
     └── test/
         └── java/
@@ -136,17 +135,88 @@ pulsenet/
                 └── pulsenet/
                     ├── common/
                     │   └── protocol/
-                    │       └── WireProtocolTest.java # Protocol framing & chunking unit tests
+                    │       └── WireProtocolTest.java       # Protocol framing & chunking unit tests (7 tests)
+                    ├── agent/
+                    │   └── TelemetryAgentTest.java         # Socket streaming & auto-reconnect tests (3 tests)
                     ├── server/
-                    │   └── registry/
-                    │       └── NodeRegistryTest.java # Thread-safety and race condition unit tests
+                    │   ├── registry/
+                    │   │   └── NodeRegistryTest.java       # Concurrency (20 threads) & lock tests (3 tests)
+                    │   └── dashboard/
+                    │       └── DashboardRendererTest.java  # Progress bar & UI generation tests (2 tests)
                     └── integration/
-                        └── IntegrationTest.java      # Full network socket loopback integration tests
+                        └── IntegrationTest.java            # Full socket loopback & watchdog tests (2 tests)
 ```
 
 ---
 
-## 5. End Result & Deliverables
+## 5. Quick Start & Execution Guide
+
+### Prerequisites
+* **Java Development Kit (JDK):** Version 17 or higher (tested with JDK 27).
+* **Apache Maven:** Version 3.8+ (`mvn`).
+
+---
+
+### A. Run Automated Unit & Integration Tests (17 Tests)
+To run the complete automated regression test suite:
+```bash
+mvn test
+```
+*Tests cover length-prefixed protocol fragmentation, client reconnect loops, 20-thread concurrency without race conditions, watchdog timeouts, and full loopback integration.*
+
+---
+
+### B. One-Click Demo Execution
+
+#### Windows PowerShell:
+```powershell
+.\run_demo.ps1
+```
+
+#### Windows Command Prompt:
+```cmd
+run_demo.bat
+```
+
+#### Linux / macOS:
+```bash
+chmod +x run_demo.sh
+./run_demo.sh
+```
+
+*The demo script compiles the project, launches the Central Aggregator Server in Window 1, and spawns the 5-node Mock Cluster in Window 2. After 10 seconds, `agent-03` is intentionally disconnected to demonstrate real-time watchdog failure detection.*
+
+---
+
+### C. Manual Component Execution
+
+#### 1. Start Aggregator Server:
+```bash
+java -cp "target/pulsenet-1.0.0-SNAPSHOT.jar;target/lib/*" com.pulsenet.server.ServerMain --port 9000
+```
+*Options:*
+* `--host <ip>` (default: `0.0.0.0`)
+* `--port <port>` (default: `9000`)
+* `--watchdog-timeout <seconds>` (default: `5.0`)
+* `--headless` (disables ANSI screen clearing)
+
+#### 2. Start Mock Cluster Simulator:
+```bash
+java -cp "target/pulsenet-1.0.0-SNAPSHOT.jar;target/lib/*" com.pulsenet.simulation.MockCluster --port 9000 --nodes 5
+```
+*Options:*
+* `--nodes <N>` (default: `5`)
+* `--interval <ms>` (default: `1000`)
+* `--no-chaos` (disables intentional drop of `agent-03`)
+
+#### 3. Start a Real Local Host Telemetry Agent:
+```bash
+java -cp "target/pulsenet-1.0.0-SNAPSHOT.jar;target/lib/*" com.pulsenet.agent.AgentMain --host 127.0.0.1 --port 9000 --node-id host-primary
+```
+
+---
+
+## 6. End Result & Deliverables
 
 ### Live Terminal Dashboard Output
 When the aggregator server runs, it displays a live-refreshing terminal interface:
@@ -171,5 +241,5 @@ When the aggregator server runs, it displays a live-refreshing terminal interfac
 ### Verification Criteria for Course Rubric
 1. **Socket Programming:** Pure standard Java socket implementation (`java.net.Socket`, `java.net.ServerSocket`, raw `InputStream` / `OutputStream`) with framed packet boundary resolution.
 2. **Multithreading:** Distinct threads for connection accepting (`ServerSocket.accept()`), per-client socket reading (`ClientHandler`), periodic watchdog auditing (`WatchdogSupervisor`), and UI rendering (`DashboardRenderer`).
-3. **Synchronization:** Provably safe updates to shared metrics map without deadlocks or dirty reads under high client concurrency using explicit locks (`ReentrantLock` / `synchronized`).
+3. **Synchronization:** Provably safe updates to shared metrics map without deadlocks or dirty reads under high client concurrency using explicit locks (`ReentrantLock`).
 4. **Fault Tolerance:** Server handles sudden client drops without crashing; clients automatically attempt exponential backoff reconnection.
