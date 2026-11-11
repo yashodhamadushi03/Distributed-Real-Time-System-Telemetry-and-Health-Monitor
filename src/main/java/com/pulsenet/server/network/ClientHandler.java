@@ -7,6 +7,7 @@ import com.pulsenet.server.registry.NodeRegistry;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -34,6 +35,7 @@ public class ClientHandler implements Runnable {
     @Override
     public void run() {
         LOGGER.info("Accepted connection from " + remoteAddress);
+        boolean timedOut = false;
         try (clientSocket;
              InputStream in = clientSocket.getInputStream()) {
 
@@ -42,8 +44,7 @@ public class ClientHandler implements Runnable {
                 String jsonMessage = WireProtocol.receiveFramedMessage(in);
                 if (jsonMessage == null) {
                     // EOF: Remote peer cleanly closed connection
-                    LOGGER.info("Client " + remoteAddress + (associatedNodeId != null ? " [" + associatedNodeId + "]" : "")
-                            + " disconnected (EOF).");
+                    LOGGER.info("Client " + describe() + " disconnected (EOF).");
                     break;
                 }
 
@@ -51,33 +52,42 @@ public class ClientHandler implements Runnable {
                     TelemetryPayload payload = TelemetryPayload.fromJson(jsonMessage);
                     this.associatedNodeId = payload.getNodeId();
 
-                    // Fast thread-safe state update under NodeRegistry lock
-                    registry.upsertNode(payload, remoteAddress);
-
-                    // Threshold warning event logging
-                    if (payload.getCpuPercent() > 85.0) {
-                        registry.logEvent(String.format("[WARN] %s crossed CPU threshold: %.1f%%",
-                                payload.getNodeId(), payload.getCpuPercent()));
-                    }
-                    if (payload.getMemoryPercent() > 90.0) {
-                        registry.logEvent(String.format("[WARN] %s crossed Memory threshold: %.1f%%",
-                                payload.getNodeId(), payload.getMemoryPercent()));
-                    }
+                    // Fast thread-safe state update under NodeRegistry lock. Passing this handler as
+                    // the connection owner lets the registry detect superseded connections; threshold
+                    // events are edge-triggered inside the registry.
+                    registry.upsertNode(payload, remoteAddress, this);
 
                 } catch (Exception ex) {
                     LOGGER.log(Level.WARNING, "Failed to parse telemetry JSON from " + remoteAddress + ": " + ex.getMessage());
                 }
             }
 
+        } catch (SocketTimeoutException e) {
+            // Half-open socket (peer slept / lost Wi-Fi without FIN/RST): no frame within SO_TIMEOUT.
+            timedOut = true;
+            LOGGER.info("Client " + describe() + " read timed out: " + e.getMessage());
         } catch (IOException e) {
-            LOGGER.info("Client " + remoteAddress + (associatedNodeId != null ? " [" + associatedNodeId + "]" : "")
-                    + " connection dropped: " + e.getMessage());
+            LOGGER.info("Client " + describe() + " connection dropped: " + e.getMessage());
         } finally {
             closeQuietly();
-            if (associatedNodeId != null) {
-                registry.logEvent(String.format("[SYS]  Client disconnected: %s (%s)", associatedNodeId, remoteAddress));
+            String nodeId = associatedNodeId;
+            if (nodeId != null) {
+                if (registry.releaseConnection(nodeId, this)) {
+                    if (timedOut) {
+                        registry.logEvent(String.format("[SYS]  Connection timed out: %s (%s)", nodeId, remoteAddress));
+                    } else {
+                        registry.logEvent(String.format("[SYS]  Client disconnected: %s (%s)", nodeId, remoteAddress));
+                    }
+                } else {
+                    registry.logEvent(String.format("[SYS]  Superseded stale connection for %s (%s)", nodeId, remoteAddress));
+                }
             }
         }
+    }
+
+    private String describe() {
+        String nodeId = associatedNodeId;
+        return remoteAddress + (nodeId != null ? " [" + nodeId + "]" : "");
     }
 
     private void closeQuietly() {

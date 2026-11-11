@@ -125,4 +125,66 @@ class NodeRegistryTest {
         NodeRecord actualInRegistry = registry.getNode("node-iso").orElseThrow();
         assertEquals("HEALTHY", actualInRegistry.getStatus());
     }
+
+    private static TelemetryPayload frame(String nodeId, double cpu, double mem) {
+        return new TelemetryPayload(nodeId, System.currentTimeMillis(), cpu, mem, 40.0, 100,
+                cpu > NodeRegistry.CPU_WARN_THRESHOLD || mem > NodeRegistry.MEMORY_WARN_THRESHOLD ? "WARNING" : "HEALTHY");
+    }
+
+    private long countEvents(String marker) {
+        return registry.getRecentEvents(1000).stream().filter(e -> e.contains(marker)).count();
+    }
+
+    @Test
+    @DisplayName("Threshold events are edge-triggered: one WARN on crossing, one OK on recovery")
+    void testEdgeTriggeredThresholdEvents() {
+        registry.upsertNode(frame("node-t", 20.0, 50.0), "10.0.0.1:1");
+        for (int i = 0; i < 10; i++) {
+            registry.upsertNode(frame("node-t", 95.0, 50.0), "10.0.0.1:1");
+        }
+        assertEquals(1, countEvents("crossed CPU threshold"), "Exactly one CPU WARN while staying above");
+        assertEquals(0, countEvents("[OK]"));
+
+        registry.upsertNode(frame("node-t", 95.0, 95.0), "10.0.0.1:1");
+        registry.upsertNode(frame("node-t", 95.0, 96.0), "10.0.0.1:1");
+        assertEquals(1, countEvents("crossed Memory threshold"));
+
+        registry.upsertNode(frame("node-t", 30.0, 95.0), "10.0.0.1:1");
+        assertEquals(0, countEvents("[OK]"), "Still above memory threshold: no OK yet");
+
+        registry.upsertNode(frame("node-t", 30.0, 50.0), "10.0.0.1:1");
+        registry.upsertNode(frame("node-t", 25.0, 50.0), "10.0.0.1:1");
+        assertEquals(1, countEvents("[OK]   node-t back below thresholds"));
+
+        registry.upsertNode(frame("node-t", 99.0, 50.0), "10.0.0.1:1");
+        assertEquals(2, countEvents("crossed CPU threshold"), "Re-crossing emits a new WARN");
+    }
+
+    @Test
+    @DisplayName("A new node arriving above threshold emits a single WARN")
+    void testNewNodeAboveThreshold() {
+        registry.upsertNode(frame("node-hot", 97.0, 30.0), "10.0.0.2:1");
+        registry.upsertNode(frame("node-hot", 97.0, 30.0), "10.0.0.2:1");
+        assertEquals(1, countEvents("[WARN] node-hot crossed CPU threshold"));
+    }
+
+    @Test
+    @DisplayName("releaseConnection only succeeds for the current connection owner")
+    void testConnectionOwnership() {
+        Object first = new Object();
+        Object second = new Object();
+        registry.upsertNode(frame("node-o", 10.0, 10.0), "10.0.0.3:1", first);
+        assertTrue(registry.isCurrentOwner("node-o", first));
+
+        registry.upsertNode(frame("node-o", 10.0, 10.0), "10.0.0.3:2", second);
+        assertFalse(registry.isCurrentOwner("node-o", first));
+        assertEquals(1, countEvents("Node reconnected on new connection: node-o"));
+
+        assertFalse(registry.releaseConnection("node-o", first), "Superseded owner must not release");
+        assertTrue(registry.isCurrentOwner("node-o", second));
+        assertTrue(registry.releaseConnection("node-o", second));
+        assertFalse(registry.releaseConnection("node-o", second), "Release is one-shot");
+        assertFalse(registry.releaseConnection("node-o", null));
+        assertEquals(1, registry.size());
+    }
 }

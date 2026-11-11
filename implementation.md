@@ -2,18 +2,18 @@
 
 This document outlines the strict execution roadmap for building PulseNet in Java.
 
-### Implementation Status: Phases 0–5 COMPLETED (17/17 Tests Passing) — Phases 6–10 (Multi-Laptop Demo) PENDING
+### Implementation Status: Phases 0–10 COMPLETED (49/49 Tests Passing) — Phase 10 on-hardware rehearsal gate PENDING (manual)
 * **Phase 0:** [x] Environment Setup & Project Skeleton — **VERIFIED** (`mvn clean compile`)
 * **Phase 1:** [x] Wire Protocol & Framing Specification — **VERIFIED** (`7/7 unit tests passing`)
 * **Phase 2:** [x] Host Metric Collector & Resilient Agent Client — **VERIFIED** (`3/3 unit tests passing`)
 * **Phase 3:** [x] Thread-Safe State Registry & Multithreaded Server — **VERIFIED** (`3/3 concurrency tests passing`)
 * **Phase 4:** [x] Watchdog Supervisor & Terminal Dashboard — **VERIFIED** (`2/2 dashboard tests + timed exec exit`)
 * **Phase 5:** [x] Cluster Simulation & Full Integration Testing — **VERIFIED** (`2/2 full loopback integration tests passing`)
-* **Phase 6:** [ ] Portable Distribution (Single Executable JAR + Launch Scripts)
-* **Phase 7:** [ ] Network Discoverability, Stable Node Identity & Dashboard Readability
-* **Phase 8:** [ ] Real-Network Connection Hygiene (Half-Open Sockets, Duplicate IDs, Event Noise)
-* **Phase 9:** [ ] Demo Tooling (Connectivity Probe, CPU Stress Generator, Firewall Helper)
-* **Phase 10:** [ ] Multi-Laptop Rehearsal & Documentation
+* **Phase 6:** [x] Portable Distribution (Single Executable JAR + Launch Scripts) — **VERIFIED** (`5/5 LauncherTest + java -jar smoke runs`)
+* **Phase 7:** [x] Network Discoverability, Stable Node Identity & Dashboard Readability — **VERIFIED** (`14 new tests + ANSI server gate run`)
+* **Phase 8:** [x] Real-Network Connection Hygiene (Half-Open Sockets, Duplicate IDs, Event Noise) — **VERIFIED** (`6 new tests; items 1–3, optional item 4 skipped`)
+* **Phase 9:** [x] Demo Tooling (Connectivity Probe, CPU Stress Generator, Firewall Helper) — **VERIFIED** (`7 new tests + probe/stress jar gate run`)
+* **Phase 10:** [x] Multi-Laptop Rehearsal & Documentation — **DOCS & PACKAGING VERIFIED** (`DEMO.md + dist bundle + local smoke rehearsal`; on-hardware gate pending)
 
 ---
 
@@ -47,7 +47,7 @@ Create the Maven standard directory layout, `pom.xml`, and baseline project stru
    src/test/java/com/pulsenet/server/dashboard/
    src/test/java/com/pulsenet/integration/
    ```
-2. Generate `pom.xml` configured for Java 17+ with minimal dependencies:
+2. Generate `pom.xml` configured for Java 25+ with minimal dependencies:
    * Jackson Databind (`com.fasterxml.jackson.core:jackson-databind:2.17.0`) for fast, clean JSON serialization.
    * JUnit 5 Jupiter (`org.junit.jupiter:junit-jupiter:5.10.2`) for testing.
    * Maven Compiler, Surefire, Exec, and Dependency plugins.
@@ -250,10 +250,10 @@ mvn test
 
 ---
 
-## Phase 6: Portable Distribution (Single Executable JAR + Launch Scripts) [PENDING]
+## Phase 6: Portable Distribution (Single Executable JAR + Launch Scripts) [COMPLETED]
 
 ### Objective
-Produce one file, `pulsenet.jar`, that runs on any laptop with Java 17+ via `java -jar`, without Maven or a `lib/` folder. Fixes **G1** and **G2**.
+Produce one file, `pulsenet.jar`, that runs on any laptop with Java 25+ via `java -jar`, without Maven or a `lib/` folder. Fixes **G1** and **G2**.
 
 ### Actions
 1. `pom.xml`: add `maven-shade-plugin` (build-time plugin only, no new runtime dependency) bound to `package`, producing `target/pulsenet.jar` with Jackson bundled and `Main-Class: com.pulsenet.Launcher`. Keep the existing `copy-dependencies` execution so `run_demo.*` keep working.
@@ -266,7 +266,7 @@ Produce one file, `pulsenet.jar`, that runs on any laptop with Java 17+ via `jav
 3. Add a `scripts/` folder with launch scripts for both Windows and macOS/Linux:
    * `scripts/start-server.bat` / `.ps1` / `.sh`: `java -jar pulsenet.jar server --port 9000`
    * `scripts/start-agent.bat` / `.ps1` / `.sh <SERVER_IP> [NODE_ID]`: `java -jar pulsenet.jar agent --host %1 --port 9000 [--node-id %2]`
-   * Each script checks `java -version` is ≥17 and prints a clear error if it isn't.
+   * Each script checks `java -version` is ≥25 and prints a clear error if it isn't.
 4. Create `scripts/package-demo.(ps1|sh)`, which runs `mvn clean package` and copies `pulsenet.jar` and `scripts/` into a `dist/pulsenet-demo/` folder (add `dist/` to `.gitignore`). That folder is what goes on a USB stick or GitHub Release for the node laptops.
 
 ### Exit Verification Gate
@@ -277,10 +277,16 @@ java -jar target/pulsenet.jar server --port 9000 --timeout 3 --headless
 mvn test
 ```
 * Add `LauncherTest`: unknown subcommand prints usage and returns non-zero exit status (via a testable `run(String[]) -> int` method); `server --help` delegates correctly.
+* **Status:** Passed. `target/pulsenet.jar` (~2.3 MB, Jackson bundled, `Main-Class: com.pulsenet.Launcher`) runs `--help`, `server`, and `agent` (agent streamed to server end-to-end). `LauncherTest` 5/5; full suite 22/22. `start-server`/`start-agent` verified as `.bat`, `.ps1`, and `.sh`, including rejection of Java < 25. `scripts/package-demo` produces `dist/pulsenet-demo/{pulsenet.jar, scripts/}`.
+* **Implementation notes:**
+  * The shade plugin writes to a separate `target/pulsenet.jar` (`outputFile`), so the thin `pulsenet-1.0.0-SNAPSHOT.jar` + `target/lib/*` used by `run_demo.*` is unchanged.
+  * `net.bytebuddy:byte-buddy` is excluded from the shaded JAR. jackson-databind 2.17.0 leaks it into runtime scope, but databind doesn't use it at runtime. This cuts the JAR from 6.5 MB to 2.3 MB.
+  * Unknown/missing subcommand → exit status `2`. Scripts share helpers in `scripts/_common.sh`, `_common.ps1`, `_check-java.bat`. These are copied into `dist/`, while `package-demo.*` is not.
+  * `.gitattributes` pins `*.sh` to LF and `*.bat` to CRLF so scripts survive cross-platform checkouts.
 
 ---
 
-## Phase 7: Network Discoverability, Stable Node Identity & Dashboard Readability [PENDING]
+## Phase 7: Network Discoverability, Stable Node Identity & Dashboard Readability [COMPLETED]
 
 ### Objective
 Make it obvious which IP the nodes should target, keep each laptop's identity stable across restarts, and keep the dashboard legible. Fixes **G3, G4, G5, G6, G10**.
@@ -301,10 +307,20 @@ java -jar target/pulsenet.jar server --port 9000 --timeout 5
 ```
 * Banner shows at least one real LAN IPv4; dashboard header no longer shows `0.0.0.0`; no log lines interleave with the dashboard.
 * New tests: `NetworkUtilsTest` (no loopback/link-local in results), `AgentMain` default ID is identical across two calls, `MockCluster` respects `--prefix`, and the dashboard renders a 21-char address untruncated.
+* **Status:** Passed. Full suite 36/36. New tests: `NetworkUtilsTest` (5), `AgentMainTest` (3), `MockClusterTest` (3, including a live-server run with prefixed IDs), and 3 new `DashboardRendererTest` cases (21-char address + 20-char ID untruncated, over-long ID still truncated, header uses the display host).
+  * Gate run: the banner printed `Agents should connect to: 10.59.75.39:9000 (Wi-Fi)` (the Hyper-V/WSL adapters were filtered out), and the dashboard header showed that IP instead of `0.0.0.0`. 0 log lines reached the console in ANSI mode, and all records went to `pulsenet-server.log`.
+  * The agent with the default ID (`didula`) was stopped and restarted after going OFFLINE. It produced `[REC] Node recovered: didula` on the **same row**, with no duplicate.
+  * Headless mode still logs to the console. `cluster --prefix nodeC-sim-` registered `nodeC-sim-01..03`.
+* **Implementation notes:**
+  * `com.pulsenet.common.net.NetworkUtils` filters by interface flags (`isUp`, `!isLoopback`, `!isVirtual`) and by name/display-name markers. On Windows, Java reports Hyper-V/WSL adapters as `Hyper-V Virtual Ethernet Adapter`, so the `virtual` marker catches them. RFC 1918 addresses are sorted first.
+  * In ANSI mode the banner stays on screen for 3 s before the first dashboard frame clears it. This is an interruptible wait on the shutdown latch, so Ctrl+C during it still exits immediately. If there are several LAN IPs, the banner lists the others as `also reachable at:`.
+  * The default node ID strips any domain suffix (macOS `name.local` → `name`). It falls back to `COMPUTERNAME`/`HOSTNAME` if the lookup returns an IP literal, then to a fixed `pulsenet-node`. It never uses random values.
+  * Dashboard table width is now 110 columns (fits 120-column terminals). `DashboardRenderer` exposes `NODE_ID_WIDTH`, `ADDRESS_WIDTH`, and `TABLE_WIDTH` constants.
+  * `*.log.lck` (JUL `FileHandler` lock file) was added to `.gitignore`.
 
 ---
 
-## Phase 8: Real-Network Connection Hygiene [PENDING]
+## Phase 8: Real-Network Connection Hygiene [COMPLETED]
 
 ### Objective
 Behave correctly when a laptop drops off Wi-Fi, sleeps, or reconnects, which a loopback-only test never exercises. Fixes **G7, G8, G9**.
@@ -324,10 +340,26 @@ mvn test
   * Two sequential connections with the same `nodeId` where the first is never closed. The registry holds one record, the status ends non-OFFLINE, and no "Client disconnected" event appears for the superseded connection.
   * 10 consecutive frames at 95% CPU produce exactly **one** `[WARN]` event.
 * Re-run the `NodeRegistryTest` 20-thread concurrency test to confirm the new transition logic adds no races.
+* **Status:** Passed (items 1–3). Full suite 42/42 via `mvn clean package`. New tests:
+  * 3 `IntegrationTest` cases: `testSilentClientTimesOut` (the handler exits within readTimeout + 1 s, the event is `Connection timed out`, and the client sees EOF), `testDuplicateNodeIdSupersedesStaleConnection` (one record, non-OFFLINE, a `Superseded` event, and no `Client disconnected`), and `testSustainedHighCpuEmitsSingleWarn` (10 frames at 95% produce 1 `[WARN]`).
+  * 3 `NodeRegistryTest` cases: `testEdgeTriggeredThresholdEvents`, `testNewNodeAboveThreshold`, and `testConnectionOwnership`.
+  * The 20-thread concurrency test still passes.
+  * Item 4 (agent-side ACK) was **skipped** as optional. The wire contract is unchanged.
+* **Implementation notes:**
+  * `TelemetryServer(host, port, registry, readTimeoutMillis)` is a new constructor. The existing constructors use `DEFAULT_READ_TIMEOUT_MILLIS = 15000`.
+  * `ServerMain --read-timeout <sec>` defaults to `max(3 × watchdog-timeout, 15)` s, and `0` disables it. `TelemetryServer` also gains `getReadTimeoutMillis()` and `getActiveConnectionCount()`.
+  * `ClientHandler` passes itself as the connection owner to the new `NodeRegistry.upsertNode(payload, addr, owner)`. The 2-arg overload is kept and leaves ownership unchanged.
+  * On exit, `releaseConnection(nodeId, this)` (under the registry lock) decides the event. If the handler still owns the node, it logs `Client disconnected` (or `Connection timed out`). Otherwise it logs `[SYS]  Superseded stale connection for <node>`.
+  * When a live (non-OFFLINE) node switches to a new connection, the registry logs `[SYS]  Node reconnected on new connection`.
+  * Threshold events moved from `ClientHandler` into `NodeRegistry.upsertNode` and are computed under the lock from the previous and new payload:
+    * `[WARN]` fires on a not-above → above crossing (CPU > 85, memory > 90). This includes a brand-new node that arrives already hot.
+    * `[OK]   <node> back below thresholds` fires once the node is below both.
+    * The thresholds are public `NodeRegistry.CPU_WARN_THRESHOLD` / `MEMORY_WARN_THRESHOLD`.
+  * Socket I/O and close stay outside the lock. The registry only does in-memory map operations.
 
 ---
 
-## Phase 9: Demo Tooling (Probe, Stress, Firewall) [PENDING]
+## Phase 9: Demo Tooling (Probe, Stress, Firewall) [COMPLETED]
 
 ### Objective
 Give presenters a one-command diagnosis for network problems and a way to trigger the WARNING state on a real laptop on cue. Fixes **G11, G12**.
@@ -357,10 +389,17 @@ java -jar target/pulsenet.jar probe --host 127.0.0.1 --port 9000      # expect O
 java -jar target/pulsenet.jar stress --seconds 5                      # CPU visibly spikes, exits by itself
 ```
 * New tests: `ProbeTest` (REFUSED against a closed ephemeral port, OK against a test `ServerSocket`, and no registry entry created by a probe), `StressTest` (threads stop within 1 s after duration).
+* **Status:** Passed. Full suite 49/49. New tests: `ProbeTest` (5: REFUSED on a closed ephemeral port, OK on a test `ServerSocket`, no registry entry after probing a live `TelemetryServer`, UNKNOWN_HOST for an unresolvable name, CLI exit codes) and `StressTest` (2: threads exit within 1 s after a 1 s run, and `stop()` halts a run early). `LauncherTest` help assertion extended to `probe`/`stress`.
+  * Gate run against `target/pulsenet.jar`: probe with no server → `REFUSED: host reachable but nothing listening on 9000 -> start the server` (exit 1); with `server --timeout 10 --headless` running → `OK: server reachable at 127.0.0.1:9000` (exit 0), and the dashboard stayed at `Active Nodes: 0` (no phantom node); `stress --seconds 5` used 12 threads and exited by itself after 5 s (exit 0).
+* **Implementation notes:**
+  * New package `com.pulsenet.tools`: `Probe` (static `probe(host, port, timeoutMs) -> Result(status, message)`, testable `run(args, out) -> int`; exit 0 = OK, 1 = not reachable, 2 = usage) and `Stress` (instance API `start()/stop()/awaitCompletion(ms)/isRunning()`; daemon xorshift busy-loop workers plus a daemon timer thread that clears the `AtomicBoolean` after the duration). `main` only calls `System.exit` on a non-zero status.
+  * Probe maps `ConnectException` → REFUSED, `SocketTimeoutException` → TIMEOUT, unresolved address / `UnknownHostException` → UNKNOWN_HOST, `NoRouteToHostException` and other `IOException`s → UNREACHABLE. It connects and closes without writing a byte; the server's handler sees EOF before any frame, so `NodeRegistry` is never touched.
+  * `Launcher` registers `probe` and `stress`. Added `scripts/probe.(sh|ps1|bat) <SERVER_IP> [PORT]` wrappers using the existing `_common` helpers.
+  * `scripts/open-firewall.ps1 [-Port 9000]` refuses to run without Administrator, lists `Get-NetConnectionProfile` and warns on `Public`, and replaces an existing `PulseNet <port>` rule (idempotent). `scripts/close-firewall.ps1` removes it. The macOS/Linux firewall note lives in the header comment of `open-firewall.ps1`. Both were syntax-checked only (not executed, since they modify the firewall). `package-demo` already copies every `*.sh/*.ps1/*.bat`, so the new scripts land in `dist/`.
 
 ---
 
-## Phase 10: Multi-Laptop Rehearsal & Documentation [PENDING]
+## Phase 10: Multi-Laptop Rehearsal & Documentation [COMPLETED — docs & packaging; on-hardware gate pending]
 
 ### Objective
 Document and rehearse the exact demo on the real three laptops. Fixes **G13**. This phase's gate is a **manual, on-hardware** checklist.
@@ -375,7 +414,7 @@ Document and rehearse the exact demo on the real three laptops. Fixes **G13**. T
 * Alternative: Laptop A creates a Windows Mobile Hotspot (Settings → Network → Mobile hotspot). Its IP is then usually `192.168.137.1`.
 * On Laptop A: set the network profile to **Private**, run `scripts/open-firewall.ps1` as Administrator, and accept the Java firewall prompt if Windows shows one ("Private networks").
 * All laptops: disable sleep on lid close and Wi-Fi power saving for the duration of the demo.
-* Java 17+ on all three (`java -version`).
+* Java 25+ on all three (`java -version`).
 
 ### Pre-Flight Checklist (≈5 min before presenting)
 1. **A:** `scripts/start-server` → note the IP in the startup banner (e.g. `192.168.137.1`). Write it on the board.
@@ -405,6 +444,16 @@ Document and rehearse the exact demo on the real three laptops. Fixes **G13**. T
 * [ ] Scene 6 shows `[REC]` on the **same** row (no duplicate node row).
 * [ ] No log lines tear the dashboard during any scene.
 * [ ] `mvn test` still passes on the development machine.
+* **Status:** Docs and packaging complete; the **on-hardware gate above is still pending** and needs a rehearsal on the real three laptops. In place of it, a local single-machine smoke rehearsal of scenes 1, 2, 4 and 6 was run from `dist/pulsenet-demo/pulsenet.jar` (port 9100, headless):
+  * Pre-server `probe` → `REFUSED: host reachable but nothing listening on 9100 -> start the server` (exit 1). With the server running → `OK: server reachable at 127.0.0.1:9100` (exit 0). `Active Nodes` stayed 0, so there was no phantom node.
+  * Agent `smoke-b` → `[SYS]  Node connected`. `stress --seconds 8` (12 threads) → exactly one `[WARN] smoke-b crossed CPU threshold: 100.0%`, then `[OK]   smoke-b back below thresholds`. Stress exited by itself (exit 0).
+  * Agent killed → `[SYS]  Client disconnected` → `[LOST] Heartbeat lost … Marked OFFLINE` after ~5.4 s. Restarted → `[REC]  Node recovered: smoke-b` with `Active Nodes` never above 1 (same row).
+  * `scripts/package-demo.ps1` → `mvn clean package` 49/49 → `dist/pulsenet-demo/{pulsenet.jar, DEMO.md, scripts/*}` including `open-firewall.ps1`, `close-firewall.ps1`, and `probe.(sh|ps1|bat)`.
+* **Implementation notes:**
+  * New root `DEMO.md` is the presenter runbook. It covers the topology, prerequisites, packaging, network setup (hotspot/client isolation, Private profile, firewall scripts, macOS/Linux firewall, sleep settings), the pre-flight checklist, the 7-scene script, a probe-outcome troubleshooting table, the fallback plan, and the manual gate. It documents only existing commands, flags and scripts.
+  * DEMO.md explains the Wi-Fi-off path: the server's read timeout (default 15 s, `--read-timeout`) reaps the half-open socket (`[SYS]  Connection timed out`). An early reconnect shows `Node reconnected on new connection` / `[REC]`, then `Superseded stale connection` for the old socket.
+  * `README.md`: the user's existing content is unchanged. Only a short `## 7. Multi-Laptop Demo` section pointing to `DEMO.md` with a 3-command quick start was appended.
+  * `scripts/package-demo.(ps1|sh)` now also copy `DEMO.md` into the bundle.
 
 ---
 

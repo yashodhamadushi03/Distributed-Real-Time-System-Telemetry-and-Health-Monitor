@@ -1,6 +1,8 @@
 package com.pulsenet.integration;
 
 import com.pulsenet.agent.TelemetryAgent;
+import com.pulsenet.common.model.TelemetryPayload;
+import com.pulsenet.common.protocol.WireProtocol;
 import com.pulsenet.server.network.TelemetryServer;
 import com.pulsenet.server.registry.NodeRecord;
 import com.pulsenet.server.registry.NodeRegistry;
@@ -11,6 +13,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.net.Socket;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -153,5 +156,101 @@ class IntegrationTest {
 
         assertEquals(3, offlineCount, "Exactly 3 stopped nodes should transition to OFFLINE");
         assertEquals(2, activeCount, "Remaining 2 nodes must stay active");
+    }
+
+    // ---------------------------------------------------------------- Phase 8: connection hygiene
+
+    private static void sendFrame(Socket socket, String nodeId, double cpu) throws IOException {
+        TelemetryPayload payload = new TelemetryPayload(nodeId, System.currentTimeMillis(),
+                cpu, 40.0, 30.0, 120, cpu > NodeRegistry.CPU_WARN_THRESHOLD ? "WARNING" : "HEALTHY");
+        WireProtocol.sendFramedMessage(socket.getOutputStream(), payload);
+    }
+
+    private long countEvents(String marker) {
+        return registry.getRecentEvents(1000).stream().filter(e -> e.contains(marker)).count();
+    }
+
+    private boolean awaitCondition(long timeoutMillis, java.util.function.BooleanSupplier condition)
+            throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMillis;
+        while (System.currentTimeMillis() < deadline) {
+            if (condition.getAsBoolean()) {
+                return true;
+            }
+            Thread.sleep(25);
+        }
+        return condition.getAsBoolean();
+    }
+
+    @Test
+    @DisplayName("Phase 8: silent half-open client is dropped within readTimeout + 1s")
+    void testSilentClientTimesOut() throws Exception {
+        long readTimeout = 1000L;
+        TelemetryServer timedServer = new TelemetryServer("127.0.0.1", 0, registry, readTimeout);
+        timedServer.start();
+        try (Socket silent = new Socket("127.0.0.1", timedServer.getPort())) {
+            sendFrame(silent, "silent-node", 10.0);
+            assertTrue(awaitCondition(1000, () -> registry.getNode("silent-node").isPresent()));
+            assertEquals(1, timedServer.getActiveConnectionCount());
+            long sentAt = System.currentTimeMillis();
+
+            // Go silent without closing. The handler thread must exit on SO_TIMEOUT.
+            assertTrue(awaitCondition(readTimeout + 1000, () -> timedServer.getActiveConnectionCount() == 0),
+                    "Handler thread must terminate within readTimeout + 1s");
+            assertTrue(System.currentTimeMillis() - sentAt <= readTimeout + 1000);
+            assertTrue(awaitCondition(500, () -> countEvents("Connection timed out: silent-node") == 1));
+            assertEquals(0, countEvents("Client disconnected: silent-node"));
+
+            // Server side closed the socket: the client now sees EOF.
+            silent.setSoTimeout(2000);
+            assertEquals(-1, silent.getInputStream().read());
+        } finally {
+            timedServer.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("Phase 8: a second connection with the same nodeId supersedes the first")
+    void testDuplicateNodeIdSupersedesStaleConnection() throws Exception {
+        TelemetryServer timedServer = new TelemetryServer("127.0.0.1", 0, registry, 1500L);
+        timedServer.start();
+        try (Socket first = new Socket("127.0.0.1", timedServer.getPort());
+             Socket second = new Socket("127.0.0.1", timedServer.getPort())) {
+            sendFrame(first, "dup-node", 10.0);
+            assertTrue(awaitCondition(1000, () -> registry.getNode("dup-node").isPresent()));
+
+            // The first connection is never closed by the client and goes silent (a Wi-Fi blip).
+            // The second keeps streaming until the stale one times out on the server.
+            long deadline = System.currentTimeMillis() + 3500;
+            while (System.currentTimeMillis() < deadline && countEvents("Superseded stale connection for dup-node") == 0) {
+                sendFrame(second, "dup-node", 12.0);
+                Thread.sleep(150);
+            }
+            sendFrame(second, "dup-node", 12.0);
+
+            assertEquals(1, countEvents("Superseded stale connection for dup-node"));
+            assertEquals(0, countEvents("Client disconnected: dup-node"),
+                    "Superseded connection must not report a disconnect");
+            assertEquals(0, countEvents("Connection timed out: dup-node"));
+            assertEquals(1, registry.getAllNodes().stream().filter(r -> r.getNodeId().equals("dup-node")).count());
+            assertNotEquals("OFFLINE", registry.getNode("dup-node").orElseThrow().getStatus());
+            assertTrue(awaitCondition(500, () -> timedServer.getActiveConnectionCount() == 1),
+                    "Only the live connection's handler remains");
+        } finally {
+            timedServer.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("Phase 8: 10 consecutive frames at 95% CPU produce exactly one WARN event")
+    void testSustainedHighCpuEmitsSingleWarn() throws Exception {
+        try (Socket client = new Socket("127.0.0.1", server.getPort())) {
+            for (int i = 0; i < 10; i++) {
+                sendFrame(client, "hot-node", 95.0);
+            }
+        }
+        assertTrue(awaitCondition(2000, () -> countEvents("Client disconnected: hot-node") == 1),
+                "All frames processed before disconnect");
+        assertEquals(1, countEvents("[WARN] hot-node crossed CPU threshold"));
     }
 }

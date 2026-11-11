@@ -26,6 +26,11 @@ public class TelemetryServer implements Runnable {
     private final int port;
     private final NodeRegistry registry;
 
+    /** Default client read timeout: max(3 x default 5 s watchdog timeout, 15 s). */
+    public static final long DEFAULT_READ_TIMEOUT_MILLIS = 15_000L;
+
+    private final long readTimeoutMillis;
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private ServerSocket serverSocket;
     private Thread listenerThread;
@@ -36,9 +41,25 @@ public class TelemetryServer implements Runnable {
     }
 
     public TelemetryServer(String host, int port, NodeRegistry registry) {
+        this(host, port, registry, DEFAULT_READ_TIMEOUT_MILLIS);
+    }
+
+    /**
+     * @param host              bind address
+     * @param port              listen port (0 = ephemeral)
+     * @param registry          shared node registry
+     * @param readTimeoutMillis {@code SO_TIMEOUT} applied to each accepted client socket; a client
+     *                          that sends nothing for this long (half-open socket) is disconnected.
+     *                          {@code 0} disables the timeout.
+     */
+    public TelemetryServer(String host, int port, NodeRegistry registry, long readTimeoutMillis) {
+        if (readTimeoutMillis < 0 || readTimeoutMillis > Integer.MAX_VALUE) {
+            throw new IllegalArgumentException("readTimeoutMillis out of range: " + readTimeoutMillis);
+        }
         this.host = host;
         this.port = port;
         this.registry = registry;
+        this.readTimeoutMillis = readTimeoutMillis;
     }
 
     /**
@@ -68,6 +89,7 @@ public class TelemetryServer implements Runnable {
                 Socket clientSocket = serverSocket.accept();
                 clientSocket.setTcpNoDelay(true);
                 clientSocket.setKeepAlive(true);
+                clientSocket.setSoTimeout((int) readTimeoutMillis);
 
                 activeClientSockets.add(clientSocket);
 
@@ -132,6 +154,20 @@ public class TelemetryServer implements Runnable {
             return serverSocket.getLocalPort();
         }
         return port;
+    }
+
+    /**
+     * @return the {@code SO_TIMEOUT} applied to accepted client sockets, in milliseconds
+     */
+    public long getReadTimeoutMillis() {
+        return readTimeoutMillis;
+    }
+
+    /**
+     * @return number of client sockets whose handler threads are still running
+     */
+    public int getActiveConnectionCount() {
+        return activeClientSockets.size();
     }
 
     public NodeRegistry getRegistry() {

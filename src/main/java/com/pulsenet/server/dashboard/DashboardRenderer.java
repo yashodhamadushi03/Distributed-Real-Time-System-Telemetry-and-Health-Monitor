@@ -25,8 +25,19 @@ public class DashboardRenderer implements Runnable {
     public static final String ANSI_GRAY = "\033[90m";
     public static final String ANSI_CLEAR_SCREEN = "\033[H\033[2J";
 
+    /** Column width for NODE ID (fits typical real hostnames such as {@code desktop-7qk2m1l}). */
+    public static final int NODE_ID_WIDTH = 20;
+    /** Column width for IP:PORT (fits the longest IPv4 endpoint, {@code 255.255.255.255:65535}). */
+    public static final int ADDRESS_WIDTH = 21;
+    /** Total table width used for the separator lines. */
+    public static final int TABLE_WIDTH = 110;
+
+    private static final String ROW_FORMAT =
+            " %-" + NODE_ID_WIDTH + "s %-" + ADDRESS_WIDTH + "s %-12s %-12s %-12s %-12s %s\n";
+
     private final NodeRegistry registry;
     private final String serverHost;
+    private final String displayHost;
     private final int serverPort;
     private final boolean ansiEnabled;
     private final PrintStream out;
@@ -45,8 +56,26 @@ public class DashboardRenderer implements Runnable {
 
     public DashboardRenderer(NodeRegistry registry, String serverHost, int serverPort,
                              boolean ansiEnabled, PrintStream out, long refreshIntervalMillis) {
+        this(registry, serverHost, serverPort, ansiEnabled, out, refreshIntervalMillis, serverHost);
+    }
+
+    /**
+     * Full constructor with a separate host shown in the header.
+     *
+     * @param registry              node registry to render
+     * @param serverHost            the bind address (may be the wildcard {@code 0.0.0.0})
+     * @param serverPort            the listening port
+     * @param ansiEnabled           whether ANSI colours and screen clearing are used
+     * @param out                   destination stream
+     * @param refreshIntervalMillis refresh period in milliseconds
+     * @param displayHost           address shown in the header, e.g. the LAN IP agents should target
+     */
+    public DashboardRenderer(NodeRegistry registry, String serverHost, int serverPort,
+                             boolean ansiEnabled, PrintStream out, long refreshIntervalMillis,
+                             String displayHost) {
         this.registry = registry;
         this.serverHost = serverHost;
+        this.displayHost = displayHost != null ? displayHost : serverHost;
         this.serverPort = serverPort;
         this.ansiEnabled = ansiEnabled;
         this.out = out;
@@ -108,17 +137,17 @@ public class DashboardRenderer implements Runnable {
         }
 
         StringBuilder sb = new StringBuilder();
-        String lineSeparator = "========================================================================================";
-        String subSeparator  = "----------------------------------------------------------------------------------------";
+        String lineSeparator = "=".repeat(TABLE_WIDTH);
+        String subSeparator  = "-".repeat(TABLE_WIDTH);
 
         sb.append(lineSeparator).append("\n");
         sb.append(String.format(" %sPulseNet: Distributed Telemetry Aggregator%s | Server: %s:%d | Active Nodes: %d\n",
                 ansiEnabled ? ANSI_BOLD + ANSI_CYAN : "",
                 ansiEnabled ? ANSI_RESET : "",
-                serverHost, serverPort, activeCount));
+                displayHost, serverPort, activeCount));
         sb.append(lineSeparator).append("\n");
 
-        sb.append(String.format(" %-13s %-17s %-12s %-12s %-12s %-12s %s\n",
+        sb.append(String.format(ROW_FORMAT,
                 "NODE ID", "IP:PORT", "CPU LOAD", "MEM USAGE", "DISK USAGE", "ACTIVE PIDS", "STATUS"));
         sb.append(subSeparator).append("\n");
 
@@ -127,8 +156,8 @@ public class DashboardRenderer implements Runnable {
         } else {
             for (NodeRecord record : nodes) {
                 TelemetryPayload payload = record.getLatestPayload();
-                String nodeId = truncate(record.getNodeId(), 13);
-                String ipPort = truncate(cleanAddress(record.getRemoteAddress()), 17);
+                String nodeId = truncate(record.getNodeId(), NODE_ID_WIDTH);
+                String ipPort = truncate(cleanAddress(record.getRemoteAddress()), ADDRESS_WIDTH);
 
                 double cpu = payload != null ? payload.getCpuPercent() : 0.0;
                 double mem = payload != null ? payload.getMemoryPercent() : 0.0;
@@ -159,8 +188,8 @@ public class DashboardRenderer implements Runnable {
                     }
                 }
 
-                sb.append(String.format(Locale.US, " %-13s %-17s %-12s %-12s %-12s %-12d %s\n",
-                        nodeId, ipPort, cpuBar, memBar, diskBar, pids, statusBadge));
+                sb.append(String.format(Locale.US, ROW_FORMAT,
+                        nodeId, ipPort, cpuBar, memBar, diskBar, Integer.toString(pids), statusBadge));
             }
         }
 
@@ -235,5 +264,19 @@ public class DashboardRenderer implements Runnable {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    /**
+     * @return the host shown in the dashboard header
+     */
+    public String getDisplayHost() {
+        return displayHost;
+    }
+
+    /**
+     * @return the configured bind address (may be the wildcard {@code 0.0.0.0})
+     */
+    public String getServerHost() {
+        return serverHost;
     }
 }

@@ -22,11 +22,32 @@ public class MockCluster {
     private final int nodeCount;
     private final long intervalMillis;
     private final boolean chaosEnabled;
+    private final String prefix;
+
+    /** Default node ID prefix, producing {@code agent-01}, {@code agent-02}, ... */
+    public static final String DEFAULT_PREFIX = "agent-";
 
     private final List<TelemetryAgent> activeAgents = new CopyOnWriteArrayList<>();
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     public MockCluster(String host, int port, int nodeCount, long intervalMillis, boolean chaosEnabled) {
+        this(host, port, nodeCount, intervalMillis, chaosEnabled, DEFAULT_PREFIX);
+    }
+
+    /**
+     * Creates a cluster whose node IDs are {@code <prefix>01}, {@code <prefix>02}, ... so that
+     * simulated clusters launched from several laptops never collide.
+     *
+     * @param host           aggregator host
+     * @param port           aggregator port
+     * @param nodeCount      number of simulated agents
+     * @param intervalMillis telemetry interval
+     * @param chaosEnabled   whether {@code <prefix>03} is terminated after 10 seconds
+     * @param prefix         node ID prefix, e.g. {@code nodeC-sim-}
+     */
+    public MockCluster(String host, int port, int nodeCount, long intervalMillis, boolean chaosEnabled,
+                       String prefix) {
+        this.prefix = (prefix == null || prefix.isEmpty()) ? DEFAULT_PREFIX : prefix;
         this.host = host;
         this.port = port;
         this.nodeCount = nodeCount;
@@ -42,7 +63,7 @@ public class MockCluster {
                 nodeCount, host, port));
 
         for (int i = 1; i <= nodeCount; i++) {
-            String nodeId = String.format("agent-%02d", i);
+            String nodeId = nodeIdFor(i);
             SyntheticMetricCollector collector = new SyntheticMetricCollector(nodeId, i);
             TelemetryAgent agent = new TelemetryAgent(host, port, nodeId, intervalMillis, collector);
             agent.setInitialBackoffMillis(500);
@@ -54,12 +75,13 @@ public class MockCluster {
         LOGGER.info(String.format("Successfully spawned %d telemetry agents.", activeAgents.size()));
 
         if (chaosEnabled && nodeCount >= 3) {
-            // Chaos scenario: Stop agent-03 after 10 seconds to showcase Watchdog timeout detection
-            LOGGER.info("Chaos Mode ENABLED: Scheduled abrupt shutdown of agent-03 in 10 seconds.");
+            // Chaos scenario: Stop <prefix>03 after 10 seconds to showcase Watchdog timeout detection
+            String chaosTarget = getChaosTargetId();
+            LOGGER.info("Chaos Mode ENABLED: Scheduled abrupt shutdown of " + chaosTarget + " in 10 seconds.");
             scheduler.schedule(() -> {
                 for (TelemetryAgent agent : activeAgents) {
-                    if ("agent-03".equals(agent.getNodeId())) {
-                        LOGGER.warning(">>> CHAOS INJECTION: Abruptly terminating agent-03 socket! <<<");
+                    if (chaosTarget.equals(agent.getNodeId())) {
+                        LOGGER.warning(">>> CHAOS INJECTION: Abruptly terminating " + chaosTarget + " socket! <<<");
                         agent.stop();
                         break;
                     }
@@ -83,6 +105,28 @@ public class MockCluster {
 
     public List<TelemetryAgent> getActiveAgents() {
         return Collections.unmodifiableList(activeAgents);
+    }
+
+    /**
+     * @param index 1-based node index
+     * @return the node ID for that index, e.g. {@code agent-03}
+     */
+    public String nodeIdFor(int index) {
+        return String.format("%s%02d", prefix, index);
+    }
+
+    /**
+     * @return the ID of the node terminated by chaos injection ({@code <prefix>03})
+     */
+    public String getChaosTargetId() {
+        return nodeIdFor(3);
+    }
+
+    /**
+     * @return the node ID prefix in use
+     */
+    public String getPrefix() {
+        return prefix;
     }
 
     /**
@@ -134,6 +178,7 @@ public class MockCluster {
         long intervalMillis = 1000L;
         boolean chaos = true;
         int durationSeconds = -1;
+        String prefix = DEFAULT_PREFIX;
 
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
@@ -152,6 +197,9 @@ public class MockCluster {
                 case "--duration":
                     if (i + 1 < args.length) durationSeconds = Integer.parseInt(args[++i]);
                     break;
+                case "--prefix":
+                    if (i + 1 < args.length) prefix = args[++i];
+                    break;
                 case "--no-chaos":
                     chaos = false;
                     break;
@@ -164,7 +212,7 @@ public class MockCluster {
             }
         }
 
-        MockCluster cluster = new MockCluster(host, port, nodes, intervalMillis, chaos);
+        MockCluster cluster = new MockCluster(host, port, nodes, intervalMillis, chaos, prefix);
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
@@ -198,6 +246,7 @@ public class MockCluster {
         System.out.println("  --nodes <N>          Number of simulated agent nodes (default: 5)");
         System.out.println("  --interval <ms>      Telemetry stream interval in ms (default: 1000)");
         System.out.println("  --duration <sec>     Total run time before automatic exit");
-        System.out.println("  --no-chaos           Disable automatic failure injection for agent-03");
+        System.out.println("  --prefix <str>       Node ID prefix, e.g. nodeC-sim- -> nodeC-sim-01 (default: agent-)");
+        System.out.println("  --no-chaos           Disable automatic failure injection for <prefix>03");
     }
 }

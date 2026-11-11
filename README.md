@@ -152,8 +152,8 @@ pulsenet/
 ## 5. Quick Start & Execution Guide
 
 ### Prerequisites
-* **Java Development Kit (JDK):** Version 17 or higher (tested with JDK 27).
-* **Apache Maven:** Version 3.8+ (`mvn`).
+* **Java Development Kit (JDK):** Version 25 LTS or higher.
+* **Apache Maven:** Version 3.9+ (`mvn`).
 
 ---
 
@@ -243,3 +243,16 @@ When the aggregator server runs, it displays a live-refreshing terminal interfac
 2. **Multithreading:** Distinct threads for connection accepting (`ServerSocket.accept()`), per-client socket reading (`ClientHandler`), periodic watchdog auditing (`WatchdogSupervisor`), and UI rendering (`DashboardRenderer`).
 3. **Synchronization:** Provably safe updates to shared metrics map without deadlocks or dirty reads under high client concurrency using explicit locks (`ReentrantLock`).
 4. **Fault Tolerance:** Server handles sudden client drops without crashing; clients automatically attempt exponential backoff reconnection.
+
+---
+
+## 7. Multi-Laptop Demo
+
+To run PulseNet across three laptops (1 server + 2 agents), build the portable bundle with `scripts/package-demo` and follow **[DEMO.md](DEMO.md)**. It covers network setup, the firewall, a pre-flight checklist, the scene script, and troubleshooting.
+
+Quick start (Windows `.bat` shown; `.ps1` and `.sh` variants take the same arguments):
+```bash
+scripts\start-server.bat              # Laptop A: note the IP in the startup banner
+scripts\probe.bat <A_IP>              # Laptops B and C: must print OK
+scripts\start-agent.bat <A_IP>        # Laptops B and C: node appears on A's dashboard
+```

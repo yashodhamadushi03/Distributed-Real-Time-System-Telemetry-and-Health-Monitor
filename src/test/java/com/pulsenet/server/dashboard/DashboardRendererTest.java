@@ -52,4 +52,52 @@ class DashboardRendererTest {
         assertTrue(populatedOutput.contains("WARNING"));
         assertTrue(populatedOutput.contains("Active Nodes: 2"));
     }
+
+    @Test
+    @DisplayName("Longest IPv4 endpoint (21 chars) and a 20-char node ID render untruncated")
+    void testWideColumnsRenderUntruncated() {
+        NodeRegistry registry = new NodeRegistry();
+        DashboardRenderer renderer = new DashboardRenderer(registry, "0.0.0.0", 9000, false);
+
+        String longAddress = "255.255.255.255:65535";   // 21 chars
+        String longNodeId = "desktop-7qk2m1l-labx";     // 20 chars
+        assertEquals(21, longAddress.length());
+        assertEquals(20, longNodeId.length());
+
+        registry.upsertNode(new TelemetryPayload(longNodeId, System.currentTimeMillis(),
+                10.0, 20.0, 30.0, 100, "HEALTHY"), "/" + longAddress);
+
+        String output = renderer.buildDashboardString();
+        assertTrue(output.contains(longAddress), "IP:PORT must not be truncated");
+        assertTrue(output.contains(longNodeId), "NODE ID must not be truncated");
+        assertFalse(output.contains("~"), "No truncation marker expected");
+
+        // Columns stay aligned: node ID padded to 20, address to 21, each followed by one space.
+        assertTrue(output.contains(" " + longNodeId + " " + longAddress + " ["));
+    }
+
+    @Test
+    @DisplayName("Over-long node IDs are still truncated at the column width")
+    void testOverlongNodeIdTruncated() {
+        NodeRegistry registry = new NodeRegistry();
+        DashboardRenderer renderer = new DashboardRenderer(registry, "127.0.0.1", 9000, false);
+        registry.upsertNode(new TelemetryPayload("a-very-long-hostname-that-overflows",
+                System.currentTimeMillis(), 1.0, 1.0, 1.0, 1, "HEALTHY"), "10.0.0.1:1");
+        String output = renderer.buildDashboardString();
+        assertTrue(output.contains("a-very-long-hostnam~"));
+    }
+
+    @Test
+    @DisplayName("Header shows the display host (LAN IP) instead of the wildcard bind address")
+    void testHeaderUsesDisplayHost() {
+        NodeRegistry registry = new NodeRegistry();
+        DashboardRenderer renderer = new DashboardRenderer(registry, "0.0.0.0", 9000, false,
+                System.out, 500L, "192.168.137.1");
+        String output = renderer.buildDashboardString();
+        assertTrue(output.contains("Server: 192.168.137.1:9000"));
+        assertFalse(output.contains("0.0.0.0"));
+
+        DashboardRenderer legacy = new DashboardRenderer(registry, "127.0.0.1", 9000, false);
+        assertEquals("127.0.0.1", legacy.getDisplayHost(), "Existing constructors keep showing the bind host");
+    }
 }
