@@ -53,6 +53,14 @@ public class ConnectionManager {
     private volatile OutputStream activeOutputStream;
     private volatile InputStream activeInputStream;
 
+    private volatile long connectedTimestamp = 0L;
+    private volatile long lastConnectTimestamp = 0L;
+    private volatile long lastDisconnectTimestamp = 0L;
+    private volatile String lastDisconnectReason = null;
+    private volatile int reconnectionCount = 0;
+    private volatile long lastReconnectTimestamp = 0L;
+    private volatile boolean hasEverConnected = false;
+
     private final ScheduledExecutorService scheduler;
     private final boolean ownsScheduler;
 
@@ -256,6 +264,18 @@ public class ConnectionManager {
             this.activeSocket = socket;
 
             retryCounter.set(0); // Reset retry counter on success
+            long now = System.currentTimeMillis();
+            this.connectedTimestamp = now;
+            this.lastConnectTimestamp = now;
+            if (hasEverConnected) {
+                this.reconnectionCount++;
+                this.lastReconnectTimestamp = now;
+                System.out.println(String.format("[RECONNECT] Connection successfully restored to %s:%d! [Node: %s] (Reconnection #%d)",
+                        currentHost, currentPort, nodeId, reconnectionCount));
+            } else {
+                this.hasEverConnected = true;
+            }
+
             transitionTo(ConnectionState.CONNECTED);
             System.out.println(String.format("[CONNECTION] Connected successfully to %s:%d [Node: %s]",
                     currentHost, currentPort, nodeId));
@@ -327,6 +347,9 @@ public class ConnectionManager {
 
             transitionTo(ConnectionState.CONNECTION_LOST);
             String reason = cause != null ? cause.getMessage() : "Connection severed";
+            this.lastDisconnectTimestamp = System.currentTimeMillis();
+            this.lastDisconnectReason = reason;
+            this.connectedTimestamp = 0L;
             System.err.println(String.format("[CONNECTION] Connection lost (%s). Preparing to reconnect...", reason));
             LOGGER.warning(String.format("[%s] Connection lost (%s). Cleaning up and initiating reconnection...", nodeId, reason));
 
@@ -549,5 +572,60 @@ public class ConnectionManager {
 
     public DiscoveryClient getDiscoveryClient() {
         return discoveryClient;
+    }
+
+    public long getConnectionUptimeMillis() {
+        return isConnected() && connectedTimestamp > 0
+                ? Math.max(0L, System.currentTimeMillis() - connectedTimestamp)
+                : 0L;
+    }
+
+    public long getLastConnectTimestamp() {
+        return lastConnectTimestamp;
+    }
+
+    public long getLastDisconnectTimestamp() {
+        return lastDisconnectTimestamp;
+    }
+
+    public String getLastDisconnectReason() {
+        return lastDisconnectReason;
+    }
+
+    public int getReconnectionCount() {
+        return reconnectionCount;
+    }
+
+    public long getLastReconnectTimestamp() {
+        return lastReconnectTimestamp;
+    }
+
+    public int getLocalPort() {
+        Socket s = activeSocket;
+        return (s != null && s.isBound()) ? s.getLocalPort() : -1;
+    }
+
+    public String getLocalAddress() {
+        Socket s = activeSocket;
+        if (s != null && s.getLocalAddress() != null) {
+            return s.getLocalAddress().getHostAddress();
+        }
+        return null;
+    }
+
+    public void populateConnectionMetrics(com.pulsenet.common.model.NetworkMetrics metrics) {
+        if (metrics == null) return;
+        metrics.setConnectionStatus(state.get().name());
+        metrics.setConnectionUptimeMillis(getConnectionUptimeMillis());
+        metrics.setLastConnectTimestamp(lastConnectTimestamp);
+        metrics.setLastDisconnectTimestamp(lastDisconnectTimestamp);
+        metrics.setLastDisconnectReason(lastDisconnectReason);
+        metrics.setReconnectionCount(reconnectionCount);
+        metrics.setLastReconnectTimestamp(lastReconnectTimestamp);
+        metrics.setConnectedServerId(selectedServerId);
+        metrics.setServerHost(currentHost);
+        metrics.setServerPort(currentPort);
+        metrics.setAgentSourcePort(getLocalPort());
+        metrics.setAgentIp(getLocalAddress());
     }
 }

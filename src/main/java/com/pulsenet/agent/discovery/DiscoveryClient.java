@@ -210,7 +210,8 @@ public class DiscoveryClient {
                                 reply.getServerId(),
                                 reply.getTcpHost(),
                                 reply.getTcpPort(),
-                                rxPacket.getAddress()
+                                rxPacket.getAddress(),
+                                reply.getUdpProbePort()
                         );
                         String resolvedHost = server.resolveConnectHost();
                         if (resolvedHost != null && !resolvedHost.isBlank()) {

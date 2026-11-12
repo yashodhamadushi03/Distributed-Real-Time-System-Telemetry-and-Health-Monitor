@@ -1,5 +1,6 @@
 package com.pulsenet.server.dashboard;
 
+import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
 import com.pulsenet.server.registry.NodeRecord;
 import com.pulsenet.server.registry.NodeRegistry;
@@ -193,6 +194,89 @@ public class DashboardRenderer implements Runnable {
             }
         }
 
+        // ==========================================
+        // DEDICATED NETWORK PERFORMANCE SECTION
+        // ==========================================
+        sb.append(lineSeparator).append("\n");
+        sb.append(String.format(" %sNETWORK PERFORMANCE%s\n",
+                ansiEnabled ? ANSI_BOLD + ANSI_CYAN : "",
+                ansiEnabled ? ANSI_RESET : ""));
+        sb.append(subSeparator).append("\n");
+
+        if (nodes.isEmpty()) {
+            sb.append(" (No network performance data available. Waiting for nodes...)\n");
+        } else {
+            for (NodeRecord record : nodes) {
+                TelemetryPayload payload = record.getLatestPayload();
+                NetworkMetrics net = payload != null ? payload.getNetworkMetrics() : null;
+                long silenceSec = Math.max(0, (now - record.getLastSeenTimestamp()) / 1000);
+
+                sb.append(String.format(" Node ID: %s%s%s",
+                        ansiEnabled ? ANSI_BOLD : "",
+                        record.getNodeId(),
+                        ansiEnabled ? ANSI_RESET : ""));
+                if (net != null && net.getAgentHostname() != null && !net.getAgentHostname().isBlank()) {
+                    sb.append(String.format(" [Host: %s]", net.getAgentHostname()));
+                }
+                sb.append("\n");
+
+                String serverEndpoint = (net != null && net.getServerHost() != null && !net.getServerHost().isBlank())
+                        ? (net.getServerHost() + ":" + (net.getServerPort() > 0 ? net.getServerPort() : serverPort))
+                        : (displayHost + ":" + serverPort);
+                String probeEndpoint = (net != null && net.getUdpProbePort() > 0)
+                        ? (":" + net.getUdpProbePort() + " (UDP)")
+                        : ":9002 (UDP)";
+                String protocol = (net != null && net.getProtocol() != null) ? net.getProtocol() : "TCP + UDP probes";
+                String connStatus = record.getStatus();
+                if (net != null && net.getConnectionStatus() != null && !"OFFLINE".equals(record.getStatus())) {
+                    connStatus = net.getConnectionStatus();
+                }
+
+                sb.append(String.format(" Server: %s (TCP) | Probe: %s | Protocol: %s | Connection Status: %s\n\n",
+                        serverEndpoint, probeEndpoint, protocol, colorizeStatus(connStatus)));
+
+                // Latency
+                sb.append(" Latency:\n");
+                sb.append(String.format(Locale.US,
+                        "   Current RTT: %-12s Average RTT: %-12s Minimum RTT: %-12s Maximum RTT: %-12s\n",
+                        formatMs(net != null ? net.getCurrentRttMs() : -1.0),
+                        formatMs(net != null ? net.getAvgRttMs() : -1.0),
+                        formatMs(net != null ? net.getMinRttMs() : -1.0),
+                        formatMs(net != null ? net.getMaxRttMs() : -1.0)));
+
+                // Network Quality
+                sb.append(" Network Quality:\n");
+                double loss = net != null ? net.getPacketLossPercent() : 0.0;
+                double jitter = net != null ? net.getAvgJitterMs() : -1.0;
+                sb.append(String.format(Locale.US,
+                        "   Packet Loss: %-12s Average Jitter: %-12s Quality: %s\n",
+                        (net != null && net.getProbesSent() > 0) ? String.format(Locale.US, "%.1f%%", loss) : "N/A",
+                        formatMs(jitter),
+                        qualityBadge(net)));
+
+                // Connection
+                sb.append(" Connection:\n");
+                long uptime = net != null ? net.getConnectionUptimeMillis() : 0L;
+                int reconns = net != null ? net.getReconnectionCount() : 0;
+                sb.append(String.format(Locale.US,
+                        "   Connection Uptime: %-14s Total Reconnections: %-4d Last Heartbeat: %ds ago\n",
+                        formatDuration(uptime),
+                        reconns,
+                        silenceSec));
+
+                // Probe Statistics
+                sb.append(" Probe Statistics:\n");
+                long sent = net != null ? net.getProbesSent() : 0L;
+                long recvd = net != null ? net.getProbesReceived() : 0L;
+                long lost = net != null ? net.getProbesLost() : 0L;
+                sb.append(String.format(Locale.US,
+                        "   Packets Sent: %-10d Responses Received: %-10d Lost Packets: %-6d\n",
+                        sent, recvd, lost));
+
+                sb.append(subSeparator).append("\n");
+            }
+        }
+
         sb.append(lineSeparator).append("\n");
         sb.append(" [EVENT LOG]\n");
         if (events.isEmpty()) {
@@ -249,6 +333,58 @@ public class DashboardRenderer implements Runnable {
         if (val == null) return "";
         if (val.length() <= maxLen) return val;
         return val.substring(0, maxLen - 1) + "~";
+    }
+
+    private String formatMs(double val) {
+        if (val < 0.0) return "N/A";
+        return String.format(Locale.US, "%.1f ms", val);
+    }
+
+    private String formatDuration(long millis) {
+        if (millis <= 0L) return "00m 00s";
+        long totalSec = millis / 1000L;
+        long hours = totalSec / 3600L;
+        long minutes = (totalSec % 3600L) / 60L;
+        long seconds = totalSec % 60L;
+        if (hours > 0) {
+            return String.format(Locale.US, "%02dh %02dm %02ds", hours, minutes, seconds);
+        }
+        return String.format(Locale.US, "%02dm %02ds", minutes, seconds);
+    }
+
+    private String qualityBadge(NetworkMetrics net) {
+        if (net == null || net.getProbesSent() == 0 || net.getCurrentRttMs() < 0) {
+            return "N/A";
+        }
+        double loss = net.getPacketLossPercent();
+        double rtt = net.getCurrentRttMs();
+        String rating;
+        String color;
+        if (loss == 0.0 && rtt < 40.0) {
+            rating = "EXCELLENT";
+            color = ANSI_GREEN;
+        } else if (loss < 2.0 && rtt < 100.0) {
+            rating = "GOOD";
+            color = ANSI_GREEN;
+        } else if (loss < 5.0) {
+            rating = "FAIR";
+            color = ANSI_YELLOW;
+        } else {
+            rating = "POOR";
+            color = ANSI_RED;
+        }
+        return ansiEnabled ? (ANSI_BOLD + color + rating + ANSI_RESET) : rating;
+    }
+
+    private String colorizeStatus(String status) {
+        if (!ansiEnabled || status == null) return status != null ? status : "UNKNOWN";
+        if ("CONNECTED".equalsIgnoreCase(status) || "HEALTHY".equalsIgnoreCase(status)) {
+            return ANSI_BOLD + ANSI_GREEN + status + ANSI_RESET;
+        } else if ("RECONNECTING".equalsIgnoreCase(status) || "WARNING".equalsIgnoreCase(status)) {
+            return ANSI_BOLD + ANSI_YELLOW + status + ANSI_RESET;
+        } else {
+            return ANSI_BOLD + ANSI_RED + status + ANSI_RESET;
+        }
     }
 
     /**

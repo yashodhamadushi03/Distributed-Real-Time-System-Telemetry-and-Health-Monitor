@@ -4,6 +4,7 @@ import com.pulsenet.common.net.NetworkUtils;
 import com.pulsenet.common.net.NetworkUtils.LanAddress;
 import com.pulsenet.server.dashboard.DashboardRenderer;
 import com.pulsenet.server.discovery.DiscoveryServer;
+import com.pulsenet.server.network.NetworkProbeServer;
 import com.pulsenet.server.network.TelemetryServer;
 import com.pulsenet.server.registry.NodeRegistry;
 import com.pulsenet.server.watchdog.WatchdogSupervisor;
@@ -36,6 +37,7 @@ public class ServerMain {
         String host = "0.0.0.0";
         int port = 9000;
         int udpPort = DiscoveryServer.DEFAULT_UDP_PORT;
+        int probePort = NetworkProbeServer.DEFAULT_PROBE_PORT;
         String serverId = null;
         boolean enableDiscovery = true;
         int timeoutSeconds = -1; // -1 means run indefinitely
@@ -54,6 +56,10 @@ public class ServerMain {
                     break;
                 case "--udp-port":
                     if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    break;
+                case "--probe-port":
+                case "--udp-probe-port":
+                    if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
                     break;
                 case "--server-id":
                     if (i + 1 < args.length) serverId = args[++i];
@@ -106,8 +112,10 @@ public class ServerMain {
                 System.out, 500L, displayHost);
 
         DiscoveryServer discoveryServer = enableDiscovery
-                ? new DiscoveryServer("0.0.0.0", udpPort, host, port, serverId)
+                ? new DiscoveryServer("0.0.0.0", udpPort, host, port, probePort, serverId)
                 : null;
+
+        NetworkProbeServer probeServer = new NetworkProbeServer("0.0.0.0", probePort);
 
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
@@ -119,6 +127,7 @@ public class ServerMain {
             if (discoveryServer != null) {
                 discoveryServer.stop();
             }
+            probeServer.stop();
             server.stop();
             shutdownLatch.countDown();
             LOGGER.info("PulseNet server stopped successfully.");
@@ -127,6 +136,11 @@ public class ServerMain {
         try {
             server.start();
             watchdog.start();
+            try {
+                probeServer.start();
+            } catch (Exception e) {
+                LOGGER.warning("Failed to bind UDP NetworkProbeServer on port " + probePort + ": " + e.getMessage());
+            }
             if (discoveryServer != null) {
                 try {
                     discoveryServer.start();
@@ -135,13 +149,14 @@ public class ServerMain {
                 }
             }
 
-            String banner = buildBanner(host, server.getPort(), udpPort, lanAddresses, enableDiscovery, !headless);
+            String banner = buildBanner(host, server.getPort(), udpPort, probePort, lanAddresses, enableDiscovery, !headless);
             System.out.print(banner);
             System.out.flush();
             LOGGER.info("Startup banner:\n" + banner);
 
-            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms, discovery=%s)",
-                    host, server.getPort(), watchdogTimeout, readTimeoutMillis, enableDiscovery ? ("UDP:" + udpPort) : "disabled"));
+            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms, discovery=%s, probe=UDP:%d)",
+                    host, server.getPort(), watchdogTimeout, readTimeoutMillis,
+                    enableDiscovery ? ("UDP:" + udpPort) : "disabled", probePort));
 
             if (!headless) {
                 // Keep the banner readable before the first dashboard frame clears the screen.
@@ -194,7 +209,17 @@ public class ServerMain {
      * Builds the startup banner backward-compatible overload.
      */
     static String buildBanner(String bindHost, int port, List<LanAddress> lanAddresses, boolean logToFile) {
-        return buildBanner(bindHost, port, DiscoveryServer.DEFAULT_UDP_PORT, lanAddresses, true, logToFile);
+        return buildBanner(bindHost, port, DiscoveryServer.DEFAULT_UDP_PORT, NetworkProbeServer.DEFAULT_PROBE_PORT,
+                lanAddresses, true, logToFile);
+    }
+
+    /**
+     * Builds the startup banner backward-compatible 6-parameter overload.
+     */
+    static String buildBanner(String bindHost, int port, int udpPort, List<LanAddress> lanAddresses,
+                              boolean discoveryActive, boolean logToFile) {
+        return buildBanner(bindHost, port, udpPort, NetworkProbeServer.DEFAULT_PROBE_PORT,
+                lanAddresses, discoveryActive, logToFile);
     }
 
     /**
@@ -203,12 +228,13 @@ public class ServerMain {
      * @param bindHost        configured bind address
      * @param port            actual listening TCP port
      * @param udpPort         listening UDP discovery port
+     * @param probePort       listening UDP probe port
      * @param lanAddresses    candidate LAN IPv4 addresses (first one is advertised)
      * @param discoveryActive whether UDP discovery is running
      * @param logToFile       whether log records are being written to {@link #LOG_FILE}
      * @return the multi-line banner text
      */
-    static String buildBanner(String bindHost, int port, int udpPort, List<LanAddress> lanAddresses,
+    static String buildBanner(String bindHost, int port, int udpPort, int probePort, List<LanAddress> lanAddresses,
                               boolean discoveryActive, boolean logToFile) {
         StringBuilder sb = new StringBuilder();
         String rule = "=".repeat(DashboardRenderer.TABLE_WIDTH);
@@ -217,6 +243,7 @@ public class ServerMain {
         if (discoveryActive) {
             sb.append(" Automatic Node Discovery active on UDP port ").append(udpPort).append('\n');
         }
+        sb.append(" Advanced Network Probing active on UDP port ").append(probePort).append('\n');
         sb.append(rule).append('\n');
 
         if (!NetworkUtils.isWildcard(bindHost)) {
@@ -305,6 +332,7 @@ public class ServerMain {
         System.out.println("  --host <ip>              Listener host bind address (default: 0.0.0.0)");
         System.out.println("  --port <port>            Listener TCP port (default: 9000)");
         System.out.println("  --udp-port <port>        UDP discovery port (default: 9001)");
+        System.out.println("  --probe-port <port>      UDP network probe port (default: 9002)");
         System.out.println("  --server-id <id>         Logical server identifier (default: pulsenet-central-server)");
         System.out.println("  --disable-discovery      Disable UDP auto-discovery responder");
         System.out.println("  --timeout <seconds>      Run for N seconds then shut down cleanly");

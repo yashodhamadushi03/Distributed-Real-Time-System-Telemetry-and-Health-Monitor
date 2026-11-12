@@ -9,12 +9,15 @@
 PulseNet aggregates core operating system metrics—including CPU utilization, memory saturation, disk I/O, active processes, and node status—across distributed hosts. Built in **Java 25**, the system utilizes low-level socket programming (`java.net.Socket`, `java.net.ServerSocket`, `java.net.DatagramSocket`) and multithreaded concurrency rather than third-party web frameworks, demonstrating fundamental operating systems and distributed networking principles.
 
 ### Key Capabilities
+* **Advanced Real-Time Network Monitoring:** Measures accurate Round-Trip Time (RTT latency: Current, Avg, Min, Max), RFC 3550 network jitter variation, and sequence-numbered UDP packet loss over a sliding measurement window.
 * **UDP-Based Automatic Node Discovery:** Agents broadcast discovery datagrams on the local network (`UDP :9001`) to automatically locate the PulseNet central server without manual IP configuration.
 * **Resilient Automatic TCP Reconnection:** Agents detect network severed events, socket closure, and host restarts, recovering seamlessly using exponential backoff with randomized jitter while preserving node identity.
+* **Connection Uptime & Reconnection Tracking:** Accurately tracks connection establishment timestamps, active uptime durations, total successful reconnection counts, and disconnection causes.
+* **Network Topology & Time-Series History:** Server tracks node origin IPs, source ports, connected server coordinates, and retains bounded historical samples per node for future frontend visualization.
 * **Deterministic Wire Protocol Framing:** Custom length-prefixed binary framing (4-byte big-endian header + UTF-8 JSON payload) that prevents TCP stream fragmentation and chunking issues.
 * **Thread-Safe Shared State Engine:** Thread-per-client concurrency synchronized by mutual exclusion locks (`java.util.concurrent.locks.ReentrantLock`).
 * **Automated Heartbeat Watchdog:** Background supervisor daemon auditing node silence thresholds to mark dead or lagging nodes `OFFLINE`.
-* **Live ANSI Terminal Dashboard:** High-contrast terminal dashboard presenting real-time hardware gauges, status badges, and an edge-triggered system event log.
+* **Live ANSI Terminal Dashboard:** High-contrast terminal dashboard presenting real-time hardware gauges, dedicated Network Performance cards per node, status badges, and an edge-triggered system event log.
 
 ---
 
@@ -376,10 +379,11 @@ This test proves both **UDP Automatic Node Discovery** and **Automatic TCP Recon
 1. Connect both laptops to the same Wi-Fi network, mobile hotspot, or Ethernet switch.
 2. **Laptop A (Host):**
    * Ensure network category is **Private**.
-   * Allow incoming connections on **TCP port 9000** and **UDP port 9001**:
+   * Allow incoming connections on **TCP port 9000** (telemetry), **UDP port 9001** (discovery), and **UDP port 9002** (network probes):
      ```powershell
      New-NetFirewallRule -DisplayName "PulseNet TCP" -Direction Inbound -Protocol TCP -LocalPort 9000 -Action Allow
-     New-NetFirewallRule -DisplayName "PulseNet UDP" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
+     New-NetFirewallRule -DisplayName "PulseNet UDP Discovery" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
+     New-NetFirewallRule -DisplayName "PulseNet UDP Probe" -Direction Inbound -Protocol UDP -LocalPort 9002 -Action Allow
      ```
    * Or allow Java when prompted by Windows Defender Firewall.
 

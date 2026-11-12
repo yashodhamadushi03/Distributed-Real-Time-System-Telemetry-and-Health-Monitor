@@ -3,11 +3,15 @@ package com.pulsenet.agent;
 import com.pulsenet.agent.connection.ConnectionManager;
 import com.pulsenet.agent.connection.ConnectionState;
 import com.pulsenet.agent.discovery.DiscoveryClient;
+import com.pulsenet.agent.network.NetworkProbeClient;
+import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
 import com.pulsenet.common.protocol.WireProtocol;
+import com.pulsenet.server.network.NetworkProbeServer;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -16,7 +20,8 @@ import java.util.logging.Logger;
 /**
  * Resilient TCP telemetry streaming client.
  * Connects to the central aggregator, samples host metrics, and streams framed JSON payloads.
- * Features automatic reconnect with exponential backoff and optional UDP auto-discovery.
+ * Features automatic reconnect with exponential backoff, UDP auto-discovery, and real-time
+ * network latency, jitter, and packet loss probing.
  */
 public class TelemetryAgent implements Runnable {
 
@@ -26,6 +31,8 @@ public class TelemetryAgent implements Runnable {
     private final long intervalMillis;
     private final MetricCollector metricCollector;
     private final ConnectionManager connectionManager;
+    private final NetworkProbeClient networkProbeClient;
+    private volatile int probePort = NetworkProbeServer.DEFAULT_PROBE_PORT;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong messagesSent = new AtomicLong(0);
@@ -58,6 +65,7 @@ public class TelemetryAgent implements Runnable {
         this.intervalMillis = intervalMillis;
         this.metricCollector = metricCollector;
         this.connectionManager = new ConnectionManager(nodeId, serverHost, serverPort);
+        this.networkProbeClient = new NetworkProbeClient(nodeId, serverHost, probePort);
         registerStateListener();
     }
 
@@ -98,12 +106,16 @@ public class TelemetryAgent implements Runnable {
         this.metricCollector = metricCollector;
         this.connectionManager = new ConnectionManager(nodeId, fallbackHost, fallbackPort, discoveryClient,
                 new com.pulsenet.agent.connection.BackoffCalculator(), 5000, 0, 3, null);
+        this.networkProbeClient = new NetworkProbeClient(nodeId, fallbackHost, probePort);
         registerStateListener();
     }
 
     private void registerStateListener() {
         this.connectionManager.addListener((oldState, newState) -> {
             if (newState == ConnectionState.CONNECTED) {
+                if (networkProbeClient != null) {
+                    networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                }
                 synchronized (stateSync) {
                     stateSync.notifyAll();
                 }
@@ -116,6 +128,14 @@ public class TelemetryAgent implements Runnable {
      */
     public synchronized void start() {
         if (running.compareAndSet(false, true)) {
+            if (networkProbeClient != null && !networkProbeClient.isRunning()) {
+                try {
+                    networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                    networkProbeClient.start();
+                } catch (Exception e) {
+                    LOGGER.warning(String.format("[%s] Failed to start NetworkProbeClient: %s", nodeId, e.getMessage()));
+                }
+            }
             workerThread = new Thread(this, "TelemetryAgent-" + nodeId);
             workerThread.setDaemon(true);
             workerThread.start();
@@ -156,6 +176,14 @@ public class TelemetryAgent implements Runnable {
                 OutputStream out = connectionManager.getActiveOutputStream();
                 if (out != null) {
                     TelemetryPayload payload = metricCollector.collect(nodeId);
+                    NetworkMetrics netMetrics = new NetworkMetrics();
+                    connectionManager.populateConnectionMetrics(netMetrics);
+                    if (networkProbeClient != null) {
+                        networkProbeClient.populateMetrics(netMetrics);
+                    }
+                    netMetrics.setAgentHostname(resolveLocalHostname());
+                    payload.setNetworkMetrics(netMetrics);
+
                     WireProtocol.sendFramedMessage(out, payload);
                     messagesSent.incrementAndGet();
                 }
@@ -181,6 +209,9 @@ public class TelemetryAgent implements Runnable {
      */
     public synchronized void stop() {
         if (running.compareAndSet(true, false)) {
+            if (networkProbeClient != null) {
+                networkProbeClient.stop();
+            }
             connectionManager.stop();
             synchronized (stateSync) {
                 stateSync.notifyAll();
@@ -188,6 +219,16 @@ public class TelemetryAgent implements Runnable {
             if (workerThread != null) {
                 workerThread.interrupt();
             }
+        }
+    }
+
+    private String resolveLocalHostname() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            String host = System.getenv("COMPUTERNAME");
+            if (host == null) host = System.getenv("HOSTNAME");
+            return (host != null && !host.isBlank()) ? host : "unknown-host";
         }
     }
 
@@ -248,5 +289,20 @@ public class TelemetryAgent implements Runnable {
 
     public void setSelectedServerId(String selectedServerId) {
         this.connectionManager.setSelectedServerId(selectedServerId);
+    }
+
+    public NetworkProbeClient getNetworkProbeClient() {
+        return networkProbeClient;
+    }
+
+    public int getProbePort() {
+        return probePort;
+    }
+
+    public void setProbePort(int probePort) {
+        this.probePort = probePort;
+        if (networkProbeClient != null) {
+            networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+        }
     }
 }

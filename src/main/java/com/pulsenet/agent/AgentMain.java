@@ -25,6 +25,7 @@ public class AgentMain {
         long intervalMillis = 1000L;
         boolean discover = false;
         int udpPort = DiscoveryClient.DEFAULT_UDP_PORT;
+        int probePort = 9002;
         String preferredServerId = null;
         boolean hostExplicitlySet = false;
 
@@ -37,6 +38,10 @@ public class AgentMain {
                     break;
                 case "--udp-port":
                     if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    break;
+                case "--probe-port":
+                case "--udp-probe-port":
+                    if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
                     break;
                 case "--server-id":
                     if (i + 1 < args.length) preferredServerId = args[++i];
@@ -84,6 +89,9 @@ public class AgentMain {
                         selectedServerId = target.serverId();
                         selectedHost = target.resolveConnectHost();
                         selectedPort = target.tcpPort();
+                        if (target.udpProbePort() > 0) {
+                            probePort = target.udpProbePort();
+                        }
                         break;
                     } else {
                         // Scenario C: No servers discovered
@@ -133,6 +141,8 @@ public class AgentMain {
                     nodeId, host, port, intervalMillis));
             agent = new TelemetryAgent(host, port, nodeId, intervalMillis);
         }
+
+        agent.setProbePort(probePort);
 
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
@@ -220,6 +230,7 @@ public class AgentMain {
         System.out.println("Options:");
         System.out.println("  --discover             Enable UDP-based automatic server discovery on LAN");
         System.out.println("  --udp-port <port>      UDP discovery port (default: 9001)");
+        System.out.println("  --probe-port <port>    UDP network probe port (default: 9002)");
         System.out.println("  --server-id <id>       Preferred server ID when multiple servers are present");
         System.out.println("  --host <ip/hostname>   Aggregator server host (default: 127.0.0.1)");
         System.out.println("  --port <port>          Aggregator server TCP port (default: 9000)");

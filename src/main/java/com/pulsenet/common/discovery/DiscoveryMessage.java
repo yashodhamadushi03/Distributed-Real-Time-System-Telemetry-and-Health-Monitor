@@ -33,6 +33,7 @@ public class DiscoveryMessage implements Serializable {
     private String serverId;
     private String tcpHost;
     private int tcpPort;
+    private int udpProbePort = 9002;
     private String preferredServerId;
 
     /**
@@ -68,7 +69,7 @@ public class DiscoveryMessage implements Serializable {
     }
 
     /**
-     * Factory method for creating a valid DISCOVERY_RESPONSE message.
+     * Factory method for creating a valid DISCOVERY_RESPONSE message with default UDP probe port (9002).
      *
      * @param serverId server identifier
      * @param tcpHost  advertised TCP hostname or IP
@@ -76,12 +77,26 @@ public class DiscoveryMessage implements Serializable {
      * @return populated DiscoveryMessage
      */
     public static DiscoveryMessage createResponse(String serverId, String tcpHost, int tcpPort) {
+        return createResponse(serverId, tcpHost, tcpPort, 9002);
+    }
+
+    /**
+     * Factory method for creating a valid DISCOVERY_RESPONSE message with explicit UDP probe port.
+     *
+     * @param serverId     server identifier
+     * @param tcpHost      advertised TCP hostname or IP
+     * @param tcpPort      listening TCP port
+     * @param udpProbePort listening UDP probe port for latency/loss measurements
+     * @return populated DiscoveryMessage
+     */
+    public static DiscoveryMessage createResponse(String serverId, String tcpHost, int tcpPort, int udpProbePort) {
         DiscoveryMessage msg = new DiscoveryMessage();
         msg.setType(TYPE_RESPONSE);
         msg.setProtocolVersion(CURRENT_PROTOCOL_VERSION);
         msg.setServerId(serverId);
         msg.setTcpHost(tcpHost);
         msg.setTcpPort(tcpPort);
+        msg.setUdpProbePort(udpProbePort);
         return msg;
     }
 
@@ -202,6 +217,14 @@ public class DiscoveryMessage implements Serializable {
         this.tcpPort = tcpPort;
     }
 
+    public int getUdpProbePort() {
+        return udpProbePort;
+    }
+
+    public void setUdpProbePort(int udpProbePort) {
+        this.udpProbePort = udpProbePort;
+    }
+
     public String getPreferredServerId() {
         return preferredServerId;
     }
@@ -216,6 +239,7 @@ public class DiscoveryMessage implements Serializable {
         if (!(o instanceof DiscoveryMessage that)) return false;
         return protocolVersion == that.protocolVersion &&
                 tcpPort == that.tcpPort &&
+                udpProbePort == that.udpProbePort &&
                 Objects.equals(type, that.type) &&
                 Objects.equals(agentId, that.agentId) &&
                 Objects.equals(serverId, that.serverId) &&
@@ -225,7 +249,7 @@ public class DiscoveryMessage implements Serializable {
 
     @Override
     public int hashCode() {
-        return Objects.hash(type, protocolVersion, agentId, serverId, tcpHost, tcpPort, preferredServerId);
+        return Objects.hash(type, protocolVersion, agentId, serverId, tcpHost, tcpPort, udpProbePort, preferredServerId);
     }
 
     @Override
@@ -237,6 +261,7 @@ public class DiscoveryMessage implements Serializable {
                 ", serverId='" + serverId + '\'' +
                 ", tcpHost='" + tcpHost + '\'' +
                 ", tcpPort=" + tcpPort +
+                ", udpProbePort=" + udpProbePort +
                 ", preferredServerId='" + preferredServerId + '\'' +
                 '}';
     }

@@ -24,6 +24,7 @@ public class DiscoveryServer implements Runnable {
     private static final Logger LOGGER = Logger.getLogger(DiscoveryServer.class.getName());
 
     public static final int DEFAULT_UDP_PORT = 9001;
+    public static final int DEFAULT_PROBE_PORT = 9002;
     public static final int MAX_DATAGRAM_SIZE = 2048;
     public static final String DEFAULT_SERVER_ID = "pulsenet-central-server";
 
@@ -31,6 +32,7 @@ public class DiscoveryServer implements Runnable {
     private final int udpPort;
     private final String tcpBindHost;
     private final int tcpPort;
+    private final int udpProbePort;
     private final String serverId;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -38,34 +40,46 @@ public class DiscoveryServer implements Runnable {
     private Thread listenerThread;
 
     /**
-     * Initializes a discovery server using default UDP port 9001 and default server ID.
+     * Initializes a discovery server using default UDP port 9001, default probe port 9002 and default server ID.
      *
      * @param tcpPort TCP port that the TelemetryServer is listening on
      */
     public DiscoveryServer(int tcpPort) {
-        this("0.0.0.0", DEFAULT_UDP_PORT, "0.0.0.0", tcpPort, DEFAULT_SERVER_ID);
+        this("0.0.0.0", DEFAULT_UDP_PORT, "0.0.0.0", tcpPort, DEFAULT_PROBE_PORT, DEFAULT_SERVER_ID);
     }
 
     /**
-     * Initializes a discovery server with full network configuration.
-     *
-     * @param bindHost    UDP bind address (typically "0.0.0.0" to receive broadcasts)
-     * @param udpPort     UDP discovery listening port
-     * @param tcpBindHost TCP server host bind address
-     * @param tcpPort     TCP server listening port
-     * @param serverId    logical identifier for this server instance
+     * Initializes a discovery server with full network configuration (default probe port 9002).
      */
     public DiscoveryServer(String bindHost, int udpPort, String tcpBindHost, int tcpPort, String serverId) {
+        this(bindHost, udpPort, tcpBindHost, tcpPort, DEFAULT_PROBE_PORT, serverId);
+    }
+
+    /**
+     * Initializes a discovery server with full network configuration including UDP probe port.
+     *
+     * @param bindHost     UDP bind address (typically "0.0.0.0" to receive broadcasts)
+     * @param udpPort      UDP discovery listening port
+     * @param tcpBindHost  TCP server host bind address
+     * @param tcpPort      TCP server listening port
+     * @param udpProbePort UDP probe listener port for latency and packet loss
+     * @param serverId     logical identifier for this server instance
+     */
+    public DiscoveryServer(String bindHost, int udpPort, String tcpBindHost, int tcpPort, int udpProbePort, String serverId) {
         if (udpPort <= 0 || udpPort > 65535) {
             throw new IllegalArgumentException("Invalid UDP port: " + udpPort);
         }
         if (tcpPort <= 0 || tcpPort > 65535) {
             throw new IllegalArgumentException("Invalid TCP port: " + tcpPort);
         }
+        if (udpProbePort <= 0 || udpProbePort > 65535) {
+            udpProbePort = DEFAULT_PROBE_PORT;
+        }
         this.bindHost = (bindHost == null || bindHost.isBlank()) ? "0.0.0.0" : bindHost;
         this.udpPort = udpPort;
         this.tcpBindHost = tcpBindHost;
         this.tcpPort = tcpPort;
+        this.udpProbePort = udpProbePort;
         this.serverId = (serverId == null || serverId.isBlank()) ? DEFAULT_SERVER_ID : serverId;
     }
 
@@ -135,7 +149,7 @@ public class DiscoveryServer implements Runnable {
             }
 
             String advertisedHost = resolveAdvertisedHost();
-            DiscoveryMessage response = DiscoveryMessage.createResponse(serverId, advertisedHost, tcpPort);
+            DiscoveryMessage response = DiscoveryMessage.createResponse(serverId, advertisedHost, tcpPort, udpProbePort);
             byte[] responseBytes = response.toBytes();
 
             DatagramPacket replyPacket = new DatagramPacket(
@@ -191,6 +205,10 @@ public class DiscoveryServer implements Runnable {
 
     public String getServerId() {
         return serverId;
+    }
+
+    public int getUdpProbePort() {
+        return udpProbePort;
     }
 }
 

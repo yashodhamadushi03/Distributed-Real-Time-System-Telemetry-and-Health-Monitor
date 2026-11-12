@@ -26,6 +26,7 @@ public class TelemetryPayload implements Serializable {
     private double diskPercent;
     private int processCount;
     private String status;
+    private NetworkMetrics networkMetrics;
 
     /**
      * Default no-arg constructor required for deserialization.
@@ -34,11 +35,20 @@ public class TelemetryPayload implements Serializable {
     }
 
     /**
-     * Full parameter constructor.
+     * Legacy parameter constructor without network metrics.
      */
     public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
                             double memoryPercent, double diskPercent,
                             int processCount, String status) {
+        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, null);
+    }
+
+    /**
+     * Full parameter constructor including network metrics.
+     */
+    public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
+                            double memoryPercent, double diskPercent,
+                            int processCount, String status, NetworkMetrics networkMetrics) {
         this.nodeId = nodeId;
         this.timestamp = timestamp;
         this.cpuPercent = cpuPercent;
@@ -46,6 +56,7 @@ public class TelemetryPayload implements Serializable {
         this.diskPercent = diskPercent;
         this.processCount = processCount;
         this.status = status;
+        this.networkMetrics = networkMetrics;
     }
 
     /**
@@ -125,6 +136,14 @@ public class TelemetryPayload implements Serializable {
         this.status = status;
     }
 
+    public NetworkMetrics getNetworkMetrics() {
+        return networkMetrics;
+    }
+
+    public void setNetworkMetrics(NetworkMetrics networkMetrics) {
+        this.networkMetrics = networkMetrics;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -135,12 +154,13 @@ public class TelemetryPayload implements Serializable {
                 Double.compare(that.diskPercent, diskPercent) == 0 &&
                 processCount == that.processCount &&
                 Objects.equals(nodeId, that.nodeId) &&
-                Objects.equals(status, that.status);
+                Objects.equals(status, that.status) &&
+                Objects.equals(networkMetrics, that.networkMetrics);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status);
+        return Objects.hash(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics);
     }
 
     @Override
@@ -153,6 +173,7 @@ public class TelemetryPayload implements Serializable {
                 ", diskPercent=" + diskPercent +
                 ", processCount=" + processCount +
                 ", status='" + status + '\'' +
+                ", networkMetrics=" + networkMetrics +
                 '}';
     }
 }

@@ -21,7 +21,7 @@ Each script ships in three flavours:
 > When `SERVER_IP` is omitted, the agent starts in **UDP Automatic Discovery Mode**, broadcasts on port 9001, locates the server on Laptop A, and connects to TCP 9000 automatically without typing any IP address!
 
 Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
-* `java -jar pulsenet.jar server [--port 9000] [--udp-port 9001]`
+* `java -jar pulsenet.jar server [--port 9000] [--udp-port 9001] [--probe-port 9002]`
 * `java -jar pulsenet.jar agent --discover [--node-id <id>]`
 * `java -jar pulsenet.jar agent --host <ip> --port 9000 [--node-id <id>]`
 * `java -jar pulsenet.jar cluster --host <ip> --nodes 5`
@@ -65,13 +65,14 @@ Laptop A can run straight from the repository or from the same folder.
 * **Alternative:** Laptop A creates a Windows Mobile Hotspot (Settings $\to$ Network & internet $\to$ Mobile hotspot). Its IP is then typically `192.168.137.1`.
 * **Laptop A (Windows server):**
   1. Set network profile to **Private** (Settings $\to$ Network $\to$ Wi-Fi $\to$ Network profile type).
-  2. Open inbound TCP 9000 and UDP 9001:
+  2. Open inbound TCP 9000, UDP 9001, and UDP 9002:
      ```powershell
      New-NetFirewallRule -DisplayName "PulseNet TCP 9000" -Direction Inbound -Protocol TCP -LocalPort 9000 -Action Allow
      New-NetFirewallRule -DisplayName "PulseNet UDP 9001" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
+     New-NetFirewallRule -DisplayName "PulseNet UDP 9002" -Direction Inbound -Protocol UDP -LocalPort 9002 -Action Allow
      ```
   3. If Windows displays a "Windows Defender Firewall has blocked some features of Java" prompt, allow access on **Private networks**.
-* **Laptop A on macOS:** System Settings $\to$ Network $\to$ Firewall $\to$ Options $\to$ allow incoming connections for `java`. Linux: `sudo ufw allow 9000/tcp && sudo ufw allow 9001/udp`.
+* **Laptop A on macOS:** System Settings $\to$ Network $\to$ Firewall $\to$ Options $\to$ allow incoming connections for `java`. Linux: `sudo ufw allow 9000/tcp && sudo ufw allow 9001/udp && sudo ufw allow 9002/udp`.
 * **All laptops:** Disable sleep on lid close and power-saving on Wi-Fi adapters during the presentation.
 
 ---
