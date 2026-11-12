@@ -101,6 +101,13 @@ class AdvancedNetworkMonitoringIntegrationTest {
             assertTrue(dashboardText.contains("Probe Statistics:"), "Dashboard must show Probe Statistics");
             assertTrue(dashboardText.contains("Packets Sent:"), "Dashboard must show Packets Sent");
 
+            // Verify Internet Connectivity Metrics
+            assertNotNull(record.getInternetMetrics(), "Internet metrics must be populated in TelemetryPayload");
+            assertTrue(dashboardText.contains("Internet Connectivity:"), "Dashboard must show Internet Connectivity section");
+            assertTrue(dashboardText.contains("Gateway:"), "Dashboard must show Gateway info");
+            assertTrue(dashboardText.contains("DNS"), "Dashboard must show DNS info");
+            assertTrue(dashboardText.contains("External HTTPS:"), "Dashboard must show External HTTPS info");
+
         } finally {
             agent.stop();
             probeServer.stop();

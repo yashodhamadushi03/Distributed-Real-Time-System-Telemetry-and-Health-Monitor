@@ -28,6 +28,8 @@ public class AgentMain {
         int probePort = 9002;
         String preferredServerId = null;
         boolean hostExplicitlySet = false;
+        String dnsHost = null;
+        String httpsEndpoint = null;
 
         // Parse command line arguments
         for (int i = 0; i < args.length; i++) {
@@ -42,6 +44,13 @@ public class AgentMain {
                 case "--probe-port":
                 case "--udp-probe-port":
                     if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
+                    break;
+                case "--dns-host":
+                    if (i + 1 < args.length) dnsHost = args[++i];
+                    break;
+                case "--https-endpoint":
+                case "--https-url":
+                    if (i + 1 < args.length) httpsEndpoint = args[++i];
                     break;
                 case "--server-id":
                     if (i + 1 < args.length) preferredServerId = args[++i];
@@ -143,6 +152,12 @@ public class AgentMain {
         }
 
         agent.setProbePort(probePort);
+        if (dnsHost != null && agent.getInternetMonitor() != null) {
+            agent.getInternetMonitor().setDnsTestHost(dnsHost);
+        }
+        if (httpsEndpoint != null && agent.getInternetMonitor() != null) {
+            agent.getInternetMonitor().setHttpsTestEndpoint(httpsEndpoint);
+        }
 
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
@@ -231,6 +246,8 @@ public class AgentMain {
         System.out.println("  --discover             Enable UDP-based automatic server discovery on LAN");
         System.out.println("  --udp-port <port>      UDP discovery port (default: 9001)");
         System.out.println("  --probe-port <port>    UDP network probe port (default: 9002)");
+        System.out.println("  --dns-host <host>      DNS resolution test host (default: dns.google)");
+        System.out.println("  --https-endpoint <url> External HTTPS connectivity endpoint (default: https://www.google.com/generate_204)");
         System.out.println("  --server-id <id>       Preferred server ID when multiple servers are present");
         System.out.println("  --host <ip/hostname>   Aggregator server host (default: 127.0.0.1)");
         System.out.println("  --port <port>          Aggregator server TCP port (default: 9000)");

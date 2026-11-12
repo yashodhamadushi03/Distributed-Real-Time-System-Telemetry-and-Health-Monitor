@@ -100,4 +100,37 @@ class DashboardRendererTest {
         DashboardRenderer legacy = new DashboardRenderer(registry, "127.0.0.1", 9000, false);
         assertEquals("127.0.0.1", legacy.getDisplayHost(), "Existing constructors keep showing the bind host");
     }
+
+    @Test
+    @DisplayName("Verify Internet Connectivity section rendering for ONLINE and LIMITED nodes")
+    void testInternetConnectivityDashboardRendering() {
+        NodeRegistry registry = new NodeRegistry();
+        DashboardRenderer renderer = new DashboardRenderer(registry, "127.0.0.1", 9000, false);
+
+        TelemetryPayload p1 = new TelemetryPayload("node-online", System.currentTimeMillis(), 10.0, 20.0, 30.0, 100, "HEALTHY");
+        com.pulsenet.common.model.InternetConnectivityMetrics inetOnline = new com.pulsenet.common.model.InternetConnectivityMetrics();
+        inetOnline.setStatus(com.pulsenet.common.model.InternetConnectivityMetrics.STATUS_ONLINE);
+        inetOnline.setGatewayIp("192.168.1.1");
+        inetOnline.setGatewayReachable(true);
+        inetOnline.setDnsTestHost("dns.google");
+        inetOnline.setDnsSuccess(true);
+        inetOnline.setDnsResolutionTimeMs(15L);
+        inetOnline.setHttpsTestEndpoint("https://www.google.com/generate_204");
+        inetOnline.setHttpsSuccess(true);
+        inetOnline.setHttpStatusCode(204);
+        inetOnline.setHttpsResponseTimeMs(42L);
+        inetOnline.setLastCheckTimestamp(System.currentTimeMillis());
+        inetOnline.setLastSuccessfulCheckTimestamp(System.currentTimeMillis());
+        p1.setInternetMetrics(inetOnline);
+
+        registry.upsertNode(p1, "192.168.1.100:54321");
+
+        String output = renderer.buildDashboardString();
+        assertTrue(output.contains("Internet Connectivity:"));
+        assertTrue(output.contains("Status: ONLINE"));
+        assertTrue(output.contains("Gateway: 192.168.1.1"));
+        assertTrue(output.contains("Reachability: REACHABLE"));
+        assertTrue(output.contains("OK (15 ms via dns.google)"));
+        assertTrue(output.contains("HTTP 204 (42 ms"));
+    }
 }

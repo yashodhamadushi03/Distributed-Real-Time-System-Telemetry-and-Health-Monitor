@@ -27,6 +27,7 @@ public class TelemetryPayload implements Serializable {
     private int processCount;
     private String status;
     private NetworkMetrics networkMetrics;
+    private InternetConnectivityMetrics internetMetrics;
 
     /**
      * Default no-arg constructor required for deserialization.
@@ -40,15 +41,25 @@ public class TelemetryPayload implements Serializable {
     public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
                             double memoryPercent, double diskPercent,
                             int processCount, String status) {
-        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, null);
+        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, null, null);
     }
 
     /**
-     * Full parameter constructor including network metrics.
+     * Parameter constructor including network metrics.
      */
     public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
                             double memoryPercent, double diskPercent,
                             int processCount, String status, NetworkMetrics networkMetrics) {
+        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics, null);
+    }
+
+    /**
+     * Full parameter constructor including network metrics and internet connectivity metrics.
+     */
+    public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
+                            double memoryPercent, double diskPercent,
+                            int processCount, String status, NetworkMetrics networkMetrics,
+                            InternetConnectivityMetrics internetMetrics) {
         this.nodeId = nodeId;
         this.timestamp = timestamp;
         this.cpuPercent = cpuPercent;
@@ -57,6 +68,7 @@ public class TelemetryPayload implements Serializable {
         this.processCount = processCount;
         this.status = status;
         this.networkMetrics = networkMetrics;
+        this.internetMetrics = internetMetrics;
     }
 
     /**
@@ -144,6 +156,14 @@ public class TelemetryPayload implements Serializable {
         this.networkMetrics = networkMetrics;
     }
 
+    public InternetConnectivityMetrics getInternetMetrics() {
+        return internetMetrics;
+    }
+
+    public void setInternetMetrics(InternetConnectivityMetrics internetMetrics) {
+        this.internetMetrics = internetMetrics;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;
@@ -155,12 +175,13 @@ public class TelemetryPayload implements Serializable {
                 processCount == that.processCount &&
                 Objects.equals(nodeId, that.nodeId) &&
                 Objects.equals(status, that.status) &&
-                Objects.equals(networkMetrics, that.networkMetrics);
+                Objects.equals(networkMetrics, that.networkMetrics) &&
+                Objects.equals(internetMetrics, that.internetMetrics);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics);
+        return Objects.hash(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics, internetMetrics);
     }
 
     @Override
@@ -174,6 +195,7 @@ public class TelemetryPayload implements Serializable {
                 ", processCount=" + processCount +
                 ", status='" + status + '\'' +
                 ", networkMetrics=" + networkMetrics +
+                ", internetMetrics=" + internetMetrics +
                 '}';
     }
 }

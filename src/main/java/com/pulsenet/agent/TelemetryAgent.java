@@ -3,6 +3,7 @@ package com.pulsenet.agent;
 import com.pulsenet.agent.connection.ConnectionManager;
 import com.pulsenet.agent.connection.ConnectionState;
 import com.pulsenet.agent.discovery.DiscoveryClient;
+import com.pulsenet.agent.network.InternetMonitor;
 import com.pulsenet.agent.network.NetworkProbeClient;
 import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
@@ -32,6 +33,7 @@ public class TelemetryAgent implements Runnable {
     private final MetricCollector metricCollector;
     private final ConnectionManager connectionManager;
     private final NetworkProbeClient networkProbeClient;
+    private final InternetMonitor internetMonitor;
     private volatile int probePort = NetworkProbeServer.DEFAULT_PROBE_PORT;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -66,6 +68,7 @@ public class TelemetryAgent implements Runnable {
         this.metricCollector = metricCollector;
         this.connectionManager = new ConnectionManager(nodeId, serverHost, serverPort);
         this.networkProbeClient = new NetworkProbeClient(nodeId, serverHost, probePort);
+        this.internetMonitor = new InternetMonitor(nodeId);
         registerStateListener();
     }
 
@@ -107,6 +110,7 @@ public class TelemetryAgent implements Runnable {
         this.connectionManager = new ConnectionManager(nodeId, fallbackHost, fallbackPort, discoveryClient,
                 new com.pulsenet.agent.connection.BackoffCalculator(), 5000, 0, 3, null);
         this.networkProbeClient = new NetworkProbeClient(nodeId, fallbackHost, probePort);
+        this.internetMonitor = new InternetMonitor(nodeId);
         registerStateListener();
     }
 
@@ -134,6 +138,13 @@ public class TelemetryAgent implements Runnable {
                     networkProbeClient.start();
                 } catch (Exception e) {
                     LOGGER.warning(String.format("[%s] Failed to start NetworkProbeClient: %s", nodeId, e.getMessage()));
+                }
+            }
+            if (internetMonitor != null && !internetMonitor.isRunning()) {
+                try {
+                    internetMonitor.start();
+                } catch (Exception e) {
+                    LOGGER.warning(String.format("[%s] Failed to start InternetMonitor: %s", nodeId, e.getMessage()));
                 }
             }
             workerThread = new Thread(this, "TelemetryAgent-" + nodeId);
@@ -183,6 +194,9 @@ public class TelemetryAgent implements Runnable {
                     }
                     netMetrics.setAgentHostname(resolveLocalHostname());
                     payload.setNetworkMetrics(netMetrics);
+                    if (internetMonitor != null) {
+                        payload.setInternetMetrics(internetMonitor.getLatestMetrics());
+                    }
 
                     WireProtocol.sendFramedMessage(out, payload);
                     messagesSent.incrementAndGet();
@@ -211,6 +225,9 @@ public class TelemetryAgent implements Runnable {
         if (running.compareAndSet(true, false)) {
             if (networkProbeClient != null) {
                 networkProbeClient.stop();
+            }
+            if (internetMonitor != null) {
+                internetMonitor.stop();
             }
             connectionManager.stop();
             synchronized (stateSync) {
@@ -304,5 +321,9 @@ public class TelemetryAgent implements Runnable {
         if (networkProbeClient != null) {
             networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
         }
+    }
+
+    public InternetMonitor getInternetMonitor() {
+        return internetMonitor;
     }
 }

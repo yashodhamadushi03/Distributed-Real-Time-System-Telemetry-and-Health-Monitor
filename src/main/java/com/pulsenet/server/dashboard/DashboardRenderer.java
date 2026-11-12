@@ -1,5 +1,6 @@
 package com.pulsenet.server.dashboard;
 
+import com.pulsenet.common.model.InternetConnectivityMetrics;
 import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
 import com.pulsenet.server.registry.NodeRecord;
@@ -273,6 +274,41 @@ public class DashboardRenderer implements Runnable {
                         "   Packets Sent: %-10d Responses Received: %-10d Lost Packets: %-6d\n",
                         sent, recvd, lost));
 
+                // Internet Connectivity
+                InternetConnectivityMetrics inet = payload != null ? payload.getInternetMetrics() : null;
+                sb.append(" Internet Connectivity:\n");
+                if (inet == null || InternetConnectivityMetrics.STATUS_UNKNOWN.equals(inet.getStatus())) {
+                    sb.append(String.format(Locale.US,
+                            "   Status: %s | Gateway: %s | DNS: %s | External HTTPS: %s\n",
+                            colorizeInternetStatus(inet != null ? inet.getStatus() : InternetConnectivityMetrics.STATUS_UNKNOWN),
+                            (inet != null && inet.getGatewayIp() != null) ? inet.getGatewayIp() : "unknown",
+                            "N/A", "N/A"));
+                } else {
+                    String gwStatus = inet.isGatewayReachable() ? "REACHABLE" : "UNREACHABLE";
+                    String dnsStatus = inet.isDnsSuccess()
+                            ? String.format(Locale.US, "OK (%d ms via %s)", inet.getDnsResolutionTimeMs(), inet.getDnsTestHost())
+                            : "FAILED";
+                    String httpStatus = inet.isHttpsSuccess()
+                            ? String.format(Locale.US, "HTTP %d (%d ms via %s)", inet.getHttpStatusCode(), inet.getHttpsResponseTimeMs(), inet.getHttpsTestEndpoint())
+                            : (inet.getHttpStatusCode() > 0 ? "HTTP " + inet.getHttpStatusCode() + " (FAILED)" : "FAILED");
+                    long lastCheckSec = inet.getLastCheckTimestamp() > 0 ? Math.max(0, (now - inet.getLastCheckTimestamp()) / 1000) : -1L;
+                    long lastSuccSec = inet.getLastSuccessfulCheckTimestamp() > 0 ? Math.max(0, (now - inet.getLastSuccessfulCheckTimestamp()) / 1000) : -1L;
+
+                    sb.append(String.format(Locale.US,
+                            "   Status: %-12s Gateway: %-15s Reachability: %s\n",
+                            colorizeInternetStatus(inet.getStatus()),
+                            inet.getGatewayIp() != null ? inet.getGatewayIp() : "unknown",
+                            gwStatus));
+                    sb.append(String.format(Locale.US,
+                            "   DNS Resolution: %-26s External HTTPS: %s\n",
+                            dnsStatus,
+                            httpStatus));
+                    sb.append(String.format(Locale.US,
+                            "   Last Check: %-20s Last Successful Online: %s\n",
+                            lastCheckSec >= 0 ? (lastCheckSec + "s ago") : "N/A",
+                            lastSuccSec >= 0 ? (lastSuccSec + "s ago") : "Never"));
+                }
+
                 sb.append(subSeparator).append("\n");
             }
         }
@@ -384,6 +420,19 @@ public class DashboardRenderer implements Runnable {
             return ANSI_BOLD + ANSI_YELLOW + status + ANSI_RESET;
         } else {
             return ANSI_BOLD + ANSI_RED + status + ANSI_RESET;
+        }
+    }
+
+    private String colorizeInternetStatus(String status) {
+        if (!ansiEnabled || status == null) return status != null ? status : "UNKNOWN";
+        if (InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(status)) {
+            return ANSI_BOLD + ANSI_GREEN + status + ANSI_RESET;
+        } else if (InternetConnectivityMetrics.STATUS_LIMITED.equalsIgnoreCase(status)) {
+            return ANSI_BOLD + ANSI_YELLOW + status + ANSI_RESET;
+        } else if (InternetConnectivityMetrics.STATUS_OFFLINE.equalsIgnoreCase(status)) {
+            return ANSI_BOLD + ANSI_RED + status + ANSI_RESET;
+        } else {
+            return ANSI_GRAY + status + ANSI_RESET;
         }
     }
 

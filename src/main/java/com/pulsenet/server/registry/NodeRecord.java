@@ -72,6 +72,10 @@ public class NodeRecord {
         return latestPayload != null ? latestPayload.getNetworkMetrics() : null;
     }
 
+    public com.pulsenet.common.model.InternetConnectivityMetrics getInternetMetrics() {
+        return latestPayload != null ? latestPayload.getInternetMetrics() : null;
+    }
+
     public String getAgentHostname() {
         com.pulsenet.common.model.NetworkMetrics nm = getNetworkMetrics();
         return (nm != null && nm.getAgentHostname() != null) ? nm.getAgentHostname() : "unknown";
