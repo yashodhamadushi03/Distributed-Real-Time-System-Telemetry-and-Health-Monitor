@@ -225,6 +225,7 @@ public class ConnectionManager {
             this.activeOutputStream = null;
             this.activeInputStream = null;
 
+            transitionTo(ConnectionState.RECONNECTING);
             LOGGER.log(Level.WARNING, String.format("[%s] TCP connection failed to %s:%d: %s",
                     nodeId, currentHost, currentPort, e.getMessage()));
             return false;
@@ -302,6 +303,8 @@ public class ConnectionManager {
             return;
         }
 
+        transitionTo(ConnectionState.RECONNECTING);
+
         int attempt = retryCounter.incrementAndGet();
         if (maxReconnectAttempts > 0 && attempt > maxReconnectAttempts) {
             System.err.println(String.format("[RECONNECT] Maximum reconnect attempts (%d) reached. Stopping.", maxReconnectAttempts));
@@ -337,11 +340,26 @@ public class ConnectionManager {
                 return;
             }
 
-            // Check if we should re-run UDP discovery because direct reconnects failed repeatedly
+            // Run UDP discovery if server coordinates are unknown or if direct reconnects failed repeatedly
             int attempt = retryCounter.get();
-            if (discoveryClient != null && attempt > maxDirectRetriesBeforeRediscover && (attempt % maxDirectRetriesBeforeRediscover == 1)) {
-                System.out.println("[RECONNECT] Multiple reconnects failed; re-running UDP discovery...");
+            boolean shouldDiscover = discoveryClient != null && (
+                    currentHost == null || currentPort <= 0 ||
+                    attempt >= maxDirectRetriesBeforeRediscover
+            );
+
+            if (shouldDiscover) {
+                if (currentHost == null || currentPort <= 0) {
+                    System.out.println("[RECONNECT] No server coordinates configured; running UDP discovery...");
+                } else {
+                    System.out.println("[RECONNECT] Direct reconnection attempts exhausted; re-running UDP discovery...");
+                }
                 performDiscovery();
+            }
+
+            if (currentHost == null || currentPort <= 0) {
+                // Discovery did not locate a server yet; schedule next retry
+                scheduleReconnect();
+                return;
             }
 
             boolean connected = attemptDirectConnect();

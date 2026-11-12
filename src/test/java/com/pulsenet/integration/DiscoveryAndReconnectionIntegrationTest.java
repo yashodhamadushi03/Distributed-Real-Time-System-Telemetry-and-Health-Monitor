@@ -205,6 +205,102 @@ class DiscoveryAndReconnectionIntegrationTest {
         assertFalse(agent.isRunning());
     }
 
+    @Test
+    @DisplayName("Test 9: Agent uses UDP discovery to reconnect when server IP/port changes and resumes telemetry")
+    void testServerAddressChangeRediscoveryAndResume() throws Exception {
+        int udpPort = findFreeUdpPort();
+        int tcpPort1 = findFreeTcpPort();
+        int candidatePort2 = findFreeTcpPort();
+        while (candidatePort2 == tcpPort1) {
+            candidatePort2 = findFreeTcpPort();
+        }
+        final int tcpPort2 = candidatePort2;
+
+        NodeRegistry registry1 = new NodeRegistry();
+        TelemetryServer server1 = new TelemetryServer("127.0.0.1", tcpPort1, registry1);
+        servers.add(server1);
+        server1.start();
+
+        DiscoveryServer udpServer1 = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort1, "server-v1");
+        discoveryServers.add(udpServer1);
+        udpServer1.start();
+
+        DiscoveryClient discoveryClient = new DiscoveryClient("roaming-node", udpPort, 1000, 2, 200L, null);
+        TelemetryAgent agent = new TelemetryAgent(discoveryClient, "roaming-node", 50);
+        agent.setInitialBackoffMillis(100);
+        agent.setMaxBackoffMillis(500);
+        agent.setConnectTimeoutMillis(1000);
+        agents.add(agent);
+        agent.start();
+
+        // 1. Initial discovery and connection to server 1
+        assertTrue(awaitCondition(4000, () -> registry1.getNode("roaming-node").isPresent()),
+                "Agent must discover and connect to server 1");
+        assertEquals(ConnectionState.CONNECTED, agent.getConnectionState());
+        assertEquals(tcpPort1, agent.getServerPort());
+
+        // 2. Server 1 shuts down (simulating server IP/port change or server migration)
+        udpServer1.stop();
+        discoveryServers.remove(udpServer1);
+        server1.stop();
+        servers.remove(server1);
+
+        assertTrue(awaitCondition(3000, () -> agent.getConnectionState() == ConnectionState.RECONNECTING
+                || agent.getConnectionState() == ConnectionState.CONNECTION_LOST),
+                "Agent must detect connection loss");
+
+        // 3. Start Server 2 on a DIFFERENT TCP port, with new DiscoveryServer announcing tcpPort2
+        NodeRegistry registry2 = new NodeRegistry();
+        TelemetryServer server2 = new TelemetryServer("127.0.0.1", tcpPort2, registry2);
+        servers.add(server2);
+        server2.start();
+
+        DiscoveryServer udpServer2 = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort2, "server-v2");
+        discoveryServers.add(udpServer2);
+        udpServer2.start();
+
+        // 4. Verify agent discovers new address via UDP discovery, reconnects, and updates target port
+        assertTrue(awaitCondition(6000, () -> agent.getConnectionState() == ConnectionState.CONNECTED
+                && agent.getServerPort() == tcpPort2),
+                "Agent must discover new server coordinates via UDP and reconnect to new port");
+
+        // 5. Verify telemetry streaming resumes automatically on server 2
+        assertTrue(awaitCondition(4000, () -> registry2.getNode("roaming-node").isPresent()
+                && registry2.getNode("roaming-node").get().getLatestPayload() != null),
+                "Telemetry transmission must resume automatically on new server");
+    }
+
+    @Test
+    @DisplayName("Test 10: Agent started before server starts up discovers and connects automatically")
+    void testAgentStartsBeforeServerAndDiscoversWhenServerStarts() throws Exception {
+        int udpPort = findFreeUdpPort();
+        int tcpPort = findFreeTcpPort();
+
+        DiscoveryClient discoveryClient = new DiscoveryClient("early-bird", udpPort, 500, 1, 100L, null);
+        TelemetryAgent agent = new TelemetryAgent(discoveryClient, "early-bird", 50);
+        agent.setInitialBackoffMillis(100);
+        agent.setMaxBackoffMillis(500);
+        agents.add(agent);
+        agent.start();
+
+        // Initially no server is running, agent must be in RECONNECTING
+        assertTrue(awaitCondition(2000, () -> agent.getConnectionState() == ConnectionState.RECONNECTING));
+
+        // Now start the server
+        NodeRegistry registry = new NodeRegistry();
+        TelemetryServer tcpServer = new TelemetryServer("127.0.0.1", tcpPort, registry);
+        servers.add(tcpServer);
+        tcpServer.start();
+
+        DiscoveryServer udpServer = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort, "late-server");
+        discoveryServers.add(udpServer);
+        udpServer.start();
+
+        // Verify agent discovers server on subsequent retry and connects
+        assertTrue(awaitCondition(4000, () -> agent.getConnectionState() == ConnectionState.CONNECTED));
+        assertTrue(awaitCondition(3000, () -> registry.getNode("early-bird").isPresent()));
+    }
+
     private boolean awaitCondition(long timeoutMillis, java.util.function.BooleanSupplier condition)
             throws InterruptedException {
         long deadline = System.currentTimeMillis() + timeoutMillis;

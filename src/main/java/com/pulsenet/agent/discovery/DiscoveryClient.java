@@ -128,7 +128,7 @@ public class DiscoveryClient {
             long deadline = System.currentTimeMillis() + timeoutMillis;
             byte[] rxBuffer = new byte[RECEIVE_BUFFER_SIZE];
 
-            while (System.currentTimeMillis() < deadline) {
+            while (System.currentTimeMillis() < deadline && !Thread.currentThread().isInterrupted()) {
                 int remainingTimeout = (int) Math.max(1, deadline - System.currentTimeMillis());
                 socket.setSoTimeout(Math.min(remainingTimeout, 1000));
                 try {
@@ -152,6 +152,10 @@ public class DiscoveryClient {
                         // If we received a response matching our preferred server, we can stop waiting early
                         if (preferredServerId != null && preferredServerId.equals(server.serverId())) {
                             break;
+                        }
+                        // Give a brief window (200ms) for competing servers to reply, then complete
+                        if (preferredServerId == null && deadline - System.currentTimeMillis() > 200) {
+                            deadline = System.currentTimeMillis() + 200;
                         }
                     } else {
                         LOGGER.fine("Received non-conforming discovery response from " + rxPacket.getSocketAddress());
