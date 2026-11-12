@@ -23,7 +23,7 @@
 
         <jackson.version>2.17.0</jackson.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
-        <javafx.version>25</javafx.version>
+        <javafx.version>21.0.2</javafx.version>
         <oshi.version>6.6.5</oshi.version>
     </properties>
 
@@ -50,7 +50,7 @@
             <version>${oshi.version}</version>
         </dependency>
 
-        <!-- JUnit Testing -->
+        <!-- Unit & Integration Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
@@ -112,7 +112,8 @@
                 </configuration>
             </plugin>
 
-            <!-- Executable JAR -->
+            <!-- Shade Plugin: self-contained executable JAR (target/pulsenet.jar) for multi-laptop demo.
+                 Written to a separate file so the thin jar + target/lib/* used by run_demo.* still exists. -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>

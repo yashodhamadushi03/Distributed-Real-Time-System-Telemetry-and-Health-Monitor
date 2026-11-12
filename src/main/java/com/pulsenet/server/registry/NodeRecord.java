@@ -68,6 +68,34 @@ public class NodeRecord {
         this.status = status;
     }
 
+    public com.pulsenet.common.model.NetworkMetrics getNetworkMetrics() {
+        return latestPayload != null ? latestPayload.getNetworkMetrics() : null;
+    }
+
+    public com.pulsenet.common.model.InternetConnectivityMetrics getInternetMetrics() {
+        return latestPayload != null ? latestPayload.getInternetMetrics() : null;
+    }
+
+    public String getAgentHostname() {
+        com.pulsenet.common.model.NetworkMetrics nm = getNetworkMetrics();
+        return (nm != null && nm.getAgentHostname() != null) ? nm.getAgentHostname() : "unknown";
+    }
+
+    public String getConnectedServerId() {
+        com.pulsenet.common.model.NetworkMetrics nm = getNetworkMetrics();
+        return (nm != null && nm.getConnectedServerId() != null) ? nm.getConnectedServerId() : "unknown";
+    }
+
+    public String getProtocol() {
+        com.pulsenet.common.model.NetworkMetrics nm = getNetworkMetrics();
+        return (nm != null && nm.getProtocol() != null) ? nm.getProtocol() : "TCP";
+    }
+
+    public String getConnectionStatus() {
+        com.pulsenet.common.model.NetworkMetrics nm = getNetworkMetrics();
+        return (nm != null && nm.getConnectionStatus() != null) ? nm.getConnectionStatus() : status;
+    }
+
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

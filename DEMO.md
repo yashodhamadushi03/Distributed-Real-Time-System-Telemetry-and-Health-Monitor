@@ -1,30 +1,38 @@
 # PulseNet Multi-Laptop Demo Runbook
 
-A rehearsable script for the live demo: **1 server laptop + 2 agent laptops** on the same network.
+A rehearsable script for the live demo: **1 server laptop + 1 or 2 agent laptops** on the same network.
 
 ```
-   [ Laptop A: SERVER ]  <-- TCP :9000 --  [ Laptop B: NODE (agent) ]
-   server + dashboard    <-- TCP :9000 --  [ Laptop C: NODE (agent [+ optional cluster]) ]
-               (all three on the same hotspot / LAN)
+   [ Laptop A: HOST / SERVER ]   <-- TCP :9000 / UDP :9001 --  [ Laptop B: AGENT NODE ]
+   ServerMain + Live Dashboard   <-- TCP :9000 / UDP :9001 --  [ Laptop C: AGENT NODE (+ optional MockCluster) ]
+                               (all on the same hotspot or LAN)
 ```
 
 All commands below are run from the `pulsenet-demo/` folder (or the repo root on the build machine).
-Each script ships in three flavours. Pick the one for your shell:
+Each script ships in three flavours:
 
 | Windows (cmd) | Windows (PowerShell) | macOS / Linux |
 |---------------|----------------------|---------------|
 | `scripts\start-server.bat` | `.\scripts\start-server.ps1` | `scripts/start-server.sh` |
-| `scripts\start-agent.bat <A_IP> [NODE_ID]` | `.\scripts\start-agent.ps1 <A_IP> [NODE_ID]` | `scripts/start-agent.sh <A_IP> [NODE_ID]` |
-| `scripts\probe.bat <A_IP> [PORT]` | `.\scripts\probe.ps1 <A_IP> [PORT]` | `scripts/probe.sh <A_IP> [PORT]` |
+| `scripts\start-agent.bat [SERVER_IP] [NODE_ID]` | `.\scripts\start-agent.ps1 [SERVER_IP] [NODE_ID]` | `scripts/start-agent.sh [SERVER_IP] [NODE_ID]` |
+| `scripts\probe.bat <SERVER_IP> [PORT]` | `.\scripts\probe.ps1 <SERVER_IP> [PORT]` | `scripts/probe.sh <SERVER_IP> [PORT]` |
 
-Anything else is a direct `java -jar pulsenet.jar <subcommand>` call, which works identically on every OS.
-(`java -jar pulsenet.jar --help` lists the subcommands: `server`, `agent`, `cluster`, `probe`, `stress`.)
+> [!TIP]
+> When `SERVER_IP` is omitted, the agent starts in **UDP Automatic Discovery Mode**, broadcasts on port 9001, locates the server on Laptop A, and connects to TCP 9000 automatically without typing any IP address!
+
+Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
+* `java -jar pulsenet.jar server [--port 9000] [--udp-port 9001] [--probe-port 9002]`
+* `java -jar pulsenet.jar agent --discover [--node-id <id>]`
+* `java -jar pulsenet.jar agent --host <ip> --port 9000 [--node-id <id>]`
+* `java -jar pulsenet.jar cluster --host <ip> --nodes 5`
+* `java -jar pulsenet.jar probe --host <ip>`
+* `java -jar pulsenet.jar stress --seconds 20`
 
 ---
 
 ## 1. Prerequisites
 
-* **Java 25 or newer** on all three laptops: `java -version`. The scripts refuse to start on older Java.
+* **Java 25 or newer** on all laptops: `java -version`. The scripts refuse to start on older Java.
 * Maven is needed **only** on the build machine.
 
 ## 2. Packaging (build machine, once)
@@ -36,101 +44,85 @@ Anything else is a direct `java -jar pulsenet.jar <subcommand>` call, which work
 scripts/package-demo.sh
 ```
 
-This runs `mvn clean package` (all tests) and assembles `dist/pulsenet-demo/`:
+This runs `mvn clean package` (all 71 unit and integration tests) and assembles `dist/pulsenet-demo/`:
 
 ```
 pulsenet-demo/
-  pulsenet.jar        (self-contained, ~2.3 MB)
+  pulsenet.jar        (self-contained shaded JAR, ~2.3 MB)
   DEMO.md             (this runbook)
-  scripts/            (start-server, start-agent, probe, open/close-firewall, helpers)
+  scripts/            (start-server, start-agent, probe, helpers)
 ```
 
-Copy `dist/pulsenet-demo/` to Laptops B and C (USB stick, shared drive, or a GitHub Release).
-Laptop A can run straight from the repo or from the same folder.
+Copy `dist/pulsenet-demo/` to Laptops B and C (via USB stick, shared folder, or GitHub Release).
+Laptop A can run straight from the repository or from the same folder.
 
-## 3. Network Setup (do this first: it is the #1 risk)
+---
 
-* **Preferred: a phone hotspot or travel router** that all three laptops join.
-  Campus or enterprise Wi-Fi (e.g. eduroam) often enables **client isolation**, which silently
-  blocks laptop-to-laptop TCP. `probe` then reports `TIMEOUT`.
-* **Alternative:** Laptop A creates a Windows Mobile Hotspot (Settings → Network & internet →
-  Mobile hotspot). Its IP is then usually `192.168.137.1`.
+## 3. Network & Firewall Setup
+
+* **Preferred:** A phone hotspot or travel router that all laptops join.
+  * *Notice:* Public or campus Wi-Fi (such as eduroam) often enables **client isolation**, which drops peer-to-peer TCP and UDP traffic.
+* **Alternative:** Laptop A creates a Windows Mobile Hotspot (Settings $\to$ Network & internet $\to$ Mobile hotspot). Its IP is then typically `192.168.137.1`.
 * **Laptop A (Windows server):**
-  1. Set the network profile to **Private** (Settings → Network → the Wi-Fi network → Network profile type).
-  2. Open TCP 9000 in an **Administrator** PowerShell:
+  1. Set network profile to **Private** (Settings $\to$ Network $\to$ Wi-Fi $\to$ Network profile type).
+  2. Open inbound TCP 9000, UDP 9001, and UDP 9002:
      ```powershell
-     powershell -ExecutionPolicy Bypass -File .\scripts\open-firewall.ps1        # optional: -Port 9000
+     New-NetFirewallRule -DisplayName "PulseNet TCP 9000" -Direction Inbound -Protocol TCP -LocalPort 9000 -Action Allow
+     New-NetFirewallRule -DisplayName "PulseNet UDP 9001" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
+     New-NetFirewallRule -DisplayName "PulseNet UDP 9002" -Direction Inbound -Protocol UDP -LocalPort 9002 -Action Allow
      ```
-     It prints the current network profile, warns if it is `Public`, and creates (or replaces) the
-     inbound rule `PulseNet 9000`.
-  3. If Windows shows a "Windows Defender Firewall has blocked some features of Java" prompt, allow it on **Private networks**.
-  4. After the demo, remove the rule: `powershell -ExecutionPolicy Bypass -File .\scripts\close-firewall.ps1`.
-* **Laptop A on macOS instead:** System Settings → Network → Firewall → Options → allow incoming
-  connections for `java` (or click *Allow* on the first-start prompt). Linux: `sudo ufw allow 9000/tcp`.
-* **All laptops:** disable sleep on lid close and Wi-Fi power saving for the duration of the demo,
-  and plug in the chargers.
+  3. If Windows displays a "Windows Defender Firewall has blocked some features of Java" prompt, allow access on **Private networks**.
+* **Laptop A on macOS:** System Settings $\to$ Network $\to$ Firewall $\to$ Options $\to$ allow incoming connections for `java`. Linux: `sudo ufw allow 9000/tcp && sudo ufw allow 9001/udp && sudo ufw allow 9002/udp`.
+* **All laptops:** Disable sleep on lid close and power-saving on Wi-Fi adapters during the presentation.
+
+---
 
 ## 4. Pre-Flight Checklist (≈5 min before presenting)
 
-1. **A:** `start-server` → note the IP in the startup banner, e.g.
-   `Agents should connect to: 192.168.137.1:9000 (Wi-Fi)`. Write it on the board.
-   (The banner stays up for 3 s, then the dashboard takes over. Full logs go to `pulsenet-server.log`.)
-2. **B and C:** `probe <A_IP>` → must print `OK: server reachable at <A_IP>:9000`.
-   A probe never registers a node, so the dashboard stays clean.
-3. **B and C:** `start-agent <A_IP>` → both hostnames appear **HEALTHY** on A's dashboard within ~2 s.
-   The node ID defaults to the lower-cased hostname, so it is stable across restarts.
-4. Stop the agents (Ctrl+C). The dashboard marks them **OFFLINE** after 5 s, confirming the watchdog
-   works on this network. Restart them and confirm `[REC]  Node recovered` on the **same rows**.
-5. Ctrl+C the server and start it again, so the audience sees a clean dashboard.
+1. **A (Server):** Run `scripts\start-server.bat`. Confirm startup banner:
+   ```
+   ==============================================================================================================
+    PulseNet Aggregator Server listening on 0.0.0.0:9000 (TCP)
+    Automatic Node Discovery active on UDP port 9001
+   ==============================================================================================================
+    Agents can auto-discover or connect to: 192.168.137.1:9000 (Wi-Fi)
+   ```
+2. **B (Agent):** Run `scripts\probe.bat 192.168.137.1 9000`. Must print `OK: server reachable`.
+3. **B and C (Agents):** Run `scripts\start-agent.bat` (no arguments $\to$ automatic discovery). Confirm both hostnames appear as **HEALTHY** on Laptop A's live dashboard within 1–2 seconds.
+4. **Failure & Reconnect test:** Stop agent on B (`Ctrl+C`). Dashboard marks node **OFFLINE** after 5 s. Start agent again; confirm green `[REC] Node recovered` on the **same row**.
+5. Stop server (`Ctrl+C`) and start again for a clean presentation dashboard.
+
+---
 
 ## 5. Demo Scene Script
 
 | Scene | Action | What the audience sees on Laptop A |
 |-------|--------|-------------------------------------|
-| 1. Boot | A: `start-server` | Banner with the LAN IP, then an empty dashboard waiting for agents |
-| 2. Join | B, then C: `start-agent <A_IP>` | Two rows with **real** CPU/RAM/Disk/PIDs and LAN `IP:PORT`; `[SYS]  Node connected` events |
-| 3. Scale *(optional)* | C: `java -jar pulsenet.jar cluster --host <A_IP> --nodes 5 --prefix c-sim- --no-chaos` | 7 nodes (`c-sim-01..05` + the 2 laptops): the thread-per-client server handles concurrent streams |
-| 4. Load | B, second terminal: `java -jar pulsenet.jar stress --seconds 20` | B's CPU bar fills and turns yellow **WARNING**; exactly **one** `[WARN] <B> crossed CPU threshold` event; after the stress ends, one `[OK]   <B> back below thresholds` and HEALTHY again |
-| 5. Failure | C: turn Wi-Fi **off** (or Ctrl+C the agent) | Within ~5 s C turns gray **OFFLINE (Ns)** with a red `[LOST] Heartbeat lost` event |
-| 6. Recovery | C: turn Wi-Fi back **on** (or rerun `start-agent <A_IP>`) | The agent's backoff (1 s → 10 s max) reconnects; green `[REC]  Node recovered` on the **same row**, no duplicate |
-| 7. Server restart *(optional)* | A: Ctrl+C, then `start-server` again | Both nodes reappear automatically within ≤10 s with no action on B/C |
+| 1. Boot | A: `scripts\start-server.bat` | Banner displaying LAN IP and UDP discovery port 9001; live ANSI dashboard initializes |
+| 2. Auto-Discovery Join | B, then C: `scripts\start-agent.bat` (no IP typed!) | Agents broadcast UDP requests on port 9001, discover Laptop A, and connect. Two rows appear on Laptop A with live CPU/RAM/Disk gauges; `[SYS] Node connected` |
+| 3. Scale *(optional)* | C: `java -jar pulsenet.jar cluster --host <A_IP> --nodes 5 --prefix c-sim- --no-chaos` | 7 active nodes streaming concurrently; shows multithreaded thread-per-client scalability |
+| 4. CPU Threshold Alert | B: `java -jar pulsenet.jar stress --seconds 20` | B's CPU bar turns yellow **WARNING** (>85%); exactly one edge-triggered `[WARN] <B> crossed CPU threshold` event; returns to HEALTHY with `[OK]` after stress |
+| 5. Connection Loss | C: Turn Wi-Fi **off** (or pull cable) | Within ~5 s, C turns gray **OFFLINE (5s)** with red event `[LOST] Heartbeat lost for <C>` |
+| 6. Automatic Recovery | C: Turn Wi-Fi back **on** | Agent detects network return, executes exponential backoff reconnect, re-registers with same logical ID; green `[REC] Node recovered` on the **same row** (no duplicate) |
+| 7. Host Crash & Recovery | A: Press `Ctrl+C` on server, wait 5s, restart server | Both agent nodes log `Connection lost. Preparing to reconnect...`, retry with exponential backoff (1s $\to$ 2s $\to$ 4s), reconnect automatically upon server reboot, and restore dashboard |
 
-**Notes for scenes 5–6 (Wi-Fi off):**
-* When Wi-Fi drops, no FIN/RST reaches the server, so C's old socket on A stays open but silent.
-  The server's **read timeout** (default 15 s; `start-server --read-timeout <sec>` to change)
-  reaps it with `[SYS]  Connection timed out: <C>`.
-* If C reconnects **before** the old socket has timed out, the new connection takes over the node ID
-  (`[SYS]  Node reconnected on new connection` while still online, or `[REC]` if already OFFLINE).
-  The old socket then logs `[SYS]  Superseded stale connection for <C>` instead of a misleading
-  "Client disconnected". Either way there is one row for C.
-* CPU stress is edge-triggered: a sustained 95% CPU produces one `[WARN]`, not one per second, so the
-  `[LOST]`/`[REC]` events stay visible in the 6-line event log.
+---
 
-## 6. Troubleshooting (`probe <A_IP>` on B or C)
+## 6. Troubleshooting
 
-| Probe output | Meaning | Fix |
-|--------------|---------|-----|
-| `OK: server reachable at …` | TCP works | If the agent still doesn't appear, check `start-agent` used the same IP |
-| `REFUSED: host reachable but nothing listening on 9000 …` | A is up, server isn't running (or wrong port) | Start the server on A; check the port matches |
-| `TIMEOUT: no response from …` | Packets are dropped | Firewall on A (`open-firewall.ps1`, Private profile), wrong IP, or Wi-Fi **client isolation** → switch to a hotspot |
-| `UNREACHABLE: …` | No route to that address | B/C not on the same network as A; re-check the Wi-Fi/hotspot and IP |
-| `UNKNOWN HOST: cannot resolve …` | Name typo / DNS | Use the numeric IP from A's banner |
+| Symptom | Cause | Solution |
+|---------|-------|----------|
+| `No PulseNet server found after 3 attempts` | Firewall on Laptop A blocked UDP 9001, or client isolation | Ensure Laptop A has allowed UDP 9001. Ensure both laptops are on the same hotspot. |
+| `probe` reports `TIMEOUT` | Firewall on Laptop A or wrong IP | Run `probe.bat <A_IP>` to test TCP port 9000. Check Windows Defender Firewall profile is Private. |
+| `REFUSED: host reachable but nothing listening` | Server is not currently running | Run `start-server` on Laptop A. |
+| Agent connects but displays duplicate row | Hostnames identical on both laptops | Run agent with explicit ID: `start-agent.bat --discover node-b` |
 
-Other symptoms:
-* **No LAN IP in the banner** (`WARNING: no LAN IPv4 address found`): A isn't connected to Wi-Fi/Ethernet.
-* **Wrong IP in the banner** (e.g. a VPN): the banner lists every candidate under `also reachable at:`. Probe each one.
-* **Two rows for one laptop:** the laptops have identical hostnames. Pass an explicit ID: `start-agent <A_IP> node-b`.
+---
 
-## 7. Fallback Plan
+## 7. Exit Verification Gate (Physical Hardware)
 
-* If the venue network blocks peer traffic and no hotspot is available, run the single-machine
-  demo on Laptop A: `run_demo.bat` / `.\run_demo.ps1` / `./run_demo.sh` (server + MockCluster with chaos injection).
-* Keep `pulsenet-server.log` open in a second window on A to explain events in detail if asked.
-
-## 8. Exit Verification Gate (manual, on real hardware)
-
-* [ ] `probe` returns OK from B and C to A.
-* [ ] Scenes 1–6 complete using only the commands in this script.
-* [ ] Scene 6 shows `[REC]` on the **same** row (no duplicate node row).
-* [ ] No log lines tear the dashboard during any scene.
-* [ ] `mvn test` still passes on the development machine.
+* [ ] UDP Discovery: Agent on Laptop B discovers Laptop A without typing an IP.
+* [ ] TCP Telemetry: Live metrics appear on Laptop A within 2 seconds of agent discovery.
+* [ ] Reconnection: Turning Wi-Fi off and on reconnects Laptop B automatically with `[REC]`.
+* [ ] Host Reboot: Restarting the server reconnects all agents without manual agent intervention.
+* [ ] Test Suite: All 71 automated tests pass (`mvn test`).

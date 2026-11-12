@@ -1,331 +1,302 @@
-
 package com.pulsenet.agent;
 
+import com.pulsenet.agent.connection.ConnectionManager;
+import com.pulsenet.agent.connection.ConnectionState;
+import com.pulsenet.agent.discovery.DiscoveryClient;
+import com.pulsenet.agent.network.InternetMonitor;
+import com.pulsenet.agent.network.NetworkProbeClient;
+import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
 import com.pulsenet.common.protocol.WireProtocol;
+import com.pulsenet.server.network.NetworkProbeServer;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.net.InetSocketAddress;
+import java.net.InetAddress;
 import java.net.Socket;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
 import java.util.logging.Logger;
 
+/**
+ * Resilient TCP telemetry streaming client.
+ * Connects to the central aggregator, samples host metrics, and streams framed JSON payloads.
+ * Features automatic reconnect with exponential backoff, UDP auto-discovery, and real-time
+ * network latency, jitter, and packet loss probing.
+ */
 public class TelemetryAgent implements Runnable {
 
-    private static final Logger LOGGER =
-            Logger.getLogger(TelemetryAgent.class.getName());
+    private static final Logger LOGGER = Logger.getLogger(TelemetryAgent.class.getName());
 
-    private final String serverHost;
-    private final int serverPort;
     private final String nodeId;
     private final long intervalMillis;
-
     private final MetricCollector metricCollector;
+    private final ConnectionManager connectionManager;
+    private final NetworkProbeClient networkProbeClient;
+    private final InternetMonitor internetMonitor;
+    private volatile int probePort = NetworkProbeServer.DEFAULT_PROBE_PORT;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicLong messagesSent = new AtomicLong(0);
+    private final Object stateSync = new Object();
 
     private long initialBackoffMillis = 1000;
     private long maxBackoffMillis = 10000;
     private int connectTimeoutMillis = 5000;
 
-    private volatile Socket currentSocket;
     private Thread workerThread;
 
-    // ================= CONSTRUCTORS =================
-
-    public TelemetryAgent(
-            String serverHost,
-            int serverPort,
-            String nodeId,
-            long intervalMillis
-    ) {
-
-        this(
-                serverHost,
-                serverPort,
-                nodeId,
-                intervalMillis,
-                new MetricCollector()
-        );
+    /**
+     * Initializes agent targeting explicit server endpoint (manual connection mode).
+     *
+     * @param serverHost     Aggregator hostname or IP.
+     * @param serverPort     Aggregator listener port.
+     * @param nodeId         Unique identity string for this host.
+     * @param intervalMillis Polling/streaming interval in milliseconds.
+     */
+    public TelemetryAgent(String serverHost, int serverPort, String nodeId, long intervalMillis) {
+        this(serverHost, serverPort, nodeId, intervalMillis, new MetricCollector());
     }
 
-    public TelemetryAgent(
-            String serverHost,
-            int serverPort,
-            String nodeId,
-            long intervalMillis,
-            MetricCollector metricCollector
-    ) {
-
-        if (serverHost == null || serverHost.isBlank()) {
-            throw new IllegalArgumentException("Server host cannot be empty");
-        }
-
-        if (serverPort < 1 || serverPort > 65535) {
-            throw new IllegalArgumentException("Invalid server port");
-        }
-
-        if (nodeId == null || nodeId.isBlank()) {
-            throw new IllegalArgumentException("Node ID cannot be empty");
-        }
-
-        if (intervalMillis <= 0) {
-            throw new IllegalArgumentException("Interval must be positive");
-        }
-
-        if (metricCollector == null) {
-            throw new IllegalArgumentException("MetricCollector cannot be null");
-        }
-
-        this.serverHost = serverHost;
-        this.serverPort = serverPort;
+    /**
+     * Initializes agent with custom MetricCollector (manual connection mode).
+     */
+    public TelemetryAgent(String serverHost, int serverPort, String nodeId, long intervalMillis,
+                          MetricCollector metricCollector) {
         this.nodeId = nodeId;
         this.intervalMillis = intervalMillis;
         this.metricCollector = metricCollector;
+        this.connectionManager = new ConnectionManager(nodeId, serverHost, serverPort);
+        this.networkProbeClient = new NetworkProbeClient(nodeId, serverHost, probePort);
+        this.internetMonitor = new InternetMonitor(nodeId);
+        registerStateListener();
     }
 
-    // ================= START =================
+    /**
+     * Initializes agent using automatic UDP discovery to locate the server.
+     *
+     * @param discoveryClient pre-configured discovery client
+     * @param nodeId          Unique identity string for this host
+     * @param intervalMillis  Polling/streaming interval in milliseconds
+     */
+    public TelemetryAgent(DiscoveryClient discoveryClient, String nodeId, long intervalMillis) {
+        this(discoveryClient, null, 0, nodeId, intervalMillis, new MetricCollector());
+    }
 
+    /**
+     * Initializes agent using automatic UDP discovery with optional manual fallback host and custom MetricCollector.
+     */
+    public TelemetryAgent(DiscoveryClient discoveryClient, String fallbackHost, int fallbackPort,
+                          String nodeId, long intervalMillis) {
+        this(discoveryClient, fallbackHost, fallbackPort, nodeId, intervalMillis, new MetricCollector());
+    }
+
+    /**
+     * Initializes agent using automatic UDP discovery with custom MetricCollector.
+     */
+    public TelemetryAgent(DiscoveryClient discoveryClient, String nodeId, long intervalMillis,
+                          MetricCollector metricCollector) {
+        this(discoveryClient, null, 0, nodeId, intervalMillis, metricCollector);
+    }
+
+    /**
+     * Full parameter discovery constructor with manual fallback and custom MetricCollector.
+     */
+    public TelemetryAgent(DiscoveryClient discoveryClient, String fallbackHost, int fallbackPort,
+                          String nodeId, long intervalMillis, MetricCollector metricCollector) {
+        this.nodeId = nodeId;
+        this.intervalMillis = intervalMillis;
+        this.metricCollector = metricCollector;
+        this.connectionManager = new ConnectionManager(nodeId, fallbackHost, fallbackPort, discoveryClient,
+                new com.pulsenet.agent.connection.BackoffCalculator(), 5000, 0, 3, null);
+        this.networkProbeClient = new NetworkProbeClient(nodeId, fallbackHost, probePort);
+        this.internetMonitor = new InternetMonitor(nodeId);
+        registerStateListener();
+    }
+
+    private void registerStateListener() {
+        this.connectionManager.addListener((oldState, newState) -> {
+            if (newState == ConnectionState.RECONNECTING || newState == ConnectionState.DISCONNECTED) {
+                if (internetMonitor != null) {
+                    internetMonitor.triggerImmediateCheck();
+                }
+            } else if (newState == ConnectionState.CONNECTED) {
+                String targetHost = connectionManager.getCurrentHost();
+                Socket activeSocket = connectionManager.getActiveSocket();
+                if (activeSocket != null && internetMonitor != null) {
+                    internetMonitor.setActiveLocalAddress(activeSocket.getLocalAddress());
+                }
+                if (networkProbeClient != null) {
+                    networkProbeClient.setTarget(targetHost, probePort);
+                    if (!networkProbeClient.isRunning()) {
+                        try {
+                            networkProbeClient.start();
+                            LOGGER.info(String.format("[%s] NetworkProbeClient active on connect (target %s:%d)", nodeId, targetHost, probePort));
+                        } catch (Exception e) {
+                            LOGGER.warning(String.format("[%s] Failed to start NetworkProbeClient on connect: %s", nodeId, e.getMessage()));
+                        }
+                    }
+                }
+                if (internetMonitor != null) {
+                    if (!internetMonitor.isRunning()) {
+                        try {
+                            internetMonitor.start();
+                            LOGGER.info(String.format("[%s] InternetMonitor active on connect", nodeId));
+                        } catch (Exception e) {
+                            LOGGER.warning(String.format("[%s] Failed to start InternetMonitor on connect: %s", nodeId, e.getMessage()));
+                        }
+                    }
+                    internetMonitor.triggerImmediateCheck();
+                }
+                synchronized (stateSync) {
+                    stateSync.notifyAll();
+                }
+            }
+        });
+    }
+
+    /**
+     * Starts the telemetry agent in a dedicated background daemon thread.
+     */
     public synchronized void start() {
-
         if (running.compareAndSet(false, true)) {
-
-            workerThread = new Thread(
-                    this,
-                    "TelemetryAgent-" + nodeId
-            );
-
+            if (networkProbeClient != null && !networkProbeClient.isRunning()) {
+                try {
+                    networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                    networkProbeClient.start();
+                } catch (Exception e) {
+                    LOGGER.warning(String.format("[%s] Failed to start NetworkProbeClient: %s", nodeId, e.getMessage()));
+                }
+            }
+            if (internetMonitor != null && !internetMonitor.isRunning()) {
+                try {
+                    internetMonitor.start();
+                } catch (Exception e) {
+                    LOGGER.warning(String.format("[%s] Failed to start InternetMonitor: %s", nodeId, e.getMessage()));
+                }
+            }
+            workerThread = new Thread(this, "TelemetryAgent-" + nodeId);
             workerThread.setDaemon(true);
             workerThread.start();
-
-            LOGGER.info(
-                    String.format(
-                            "[%s] Agent started. Target: %s:%d",
-                            nodeId,
-                            serverHost,
-                            serverPort
-                    )
-            );
+            LOGGER.info(String.format("[%s] Telemetry agent started (interval=%dms)", nodeId, intervalMillis));
         }
     }
 
-    // ================= MAIN CONNECTION LOOP =================
-
+    /**
+     * Main connection lifecycle and telemetry streaming loop.
+     */
     @Override
     public void run() {
+        if (!running.get()) {
+            return;
+        }
 
-        running.set(true);
+        // Initiate initial connection attempt
+        connectionManager.connect();
 
-        long currentBackoff = initialBackoffMillis;
-
-        while (running.get()
-                && !Thread.currentThread().isInterrupted()) {
-
-            Socket socket = null;
+        while (running.get() && !Thread.currentThread().isInterrupted()) {
+            if (!connectionManager.isConnected()) {
+                synchronized (stateSync) {
+                    while (running.get() && !connectionManager.isConnected()) {
+                        try {
+                            stateSync.wait(100);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+                if (!running.get() || Thread.currentThread().isInterrupted()) {
+                    break;
+                }
+            }
 
             try {
-
-                LOGGER.info(
-                        String.format(
-                                "[%s] Connecting to %s:%d...",
-                                nodeId,
-                                serverHost,
-                                serverPort
-                        )
-                );
-
-                socket = new Socket();
-
-                socket.setTcpNoDelay(true);
-                socket.setKeepAlive(true);
-
-                socket.connect(
-                        new InetSocketAddress(serverHost, serverPort),
-                        connectTimeoutMillis
-                );
-
-                currentSocket = socket;
-
-                LOGGER.info(
-                        String.format(
-                                "[%s] Connected successfully!",
-                                nodeId
-                        )
-                );
-
-                // Reset backoff after successful connection.
-                currentBackoff = initialBackoffMillis;
-
-                OutputStream outputStream =
-                        socket.getOutputStream();
-
-                // ================= TELEMETRY STREAMING =================
-
-                while (running.get()
-                        && !socket.isClosed()
-                        && socket.isConnected()) {
-
-                    try {
-
-                        // Collect actual system metrics.
-                        TelemetryPayload payload =
-                                metricCollector.collect(nodeId);
-
-                        // Send complete JSON telemetry.
-                        WireProtocol.sendFramedMessage(
-                                outputStream,
-                                payload
-                        );
-
-                        long count = messagesSent.incrementAndGet();
-
-                        LOGGER.fine(
-                                String.format(
-                                        "[%s] Telemetry sent. Messages: %d",
-                                        nodeId,
-                                        count
-                                )
-                        );
-
-                    } catch (RuntimeException e) {
-
-                        LOGGER.log(
-                                Level.WARNING,
-                                "[" + nodeId + "] Metric collection failed",
-                                e
-                        );
-
-                        // Continue attempting the next sample.
+                OutputStream out = connectionManager.getActiveOutputStream();
+                if (out != null) {
+                    Socket activeSocket = connectionManager.getActiveSocket();
+                    if (activeSocket != null && internetMonitor != null) {
+                        internetMonitor.setActiveLocalAddress(activeSocket.getLocalAddress());
+                    }
+                    if (networkProbeClient != null && !networkProbeClient.isRunning()) {
+                        try {
+                            networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                            networkProbeClient.start();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (internetMonitor != null && !internetMonitor.isRunning()) {
+                        try {
+                            internetMonitor.start();
+                        } catch (Exception ignored) {
+                        }
                     }
 
-                    try {
-
-                        Thread.sleep(intervalMillis);
-
-                    } catch (InterruptedException e) {
-
-                        Thread.currentThread().interrupt();
-                        break;
+                    TelemetryPayload payload = metricCollector.collect(nodeId);
+                    NetworkMetrics netMetrics = new NetworkMetrics();
+                    connectionManager.populateConnectionMetrics(netMetrics);
+                    if (networkProbeClient != null) {
+                        networkProbeClient.populateMetrics(netMetrics);
                     }
+                    netMetrics.setAgentHostname(resolveLocalHostname());
+                    payload.setNetworkMetrics(netMetrics);
+                    if (internetMonitor != null) {
+                        payload.setInternetMetrics(internetMonitor.getLatestMetrics());
+                    }
+
+                    WireProtocol.sendFramedMessage(out, payload);
+                    messagesSent.incrementAndGet();
                 }
+
+                Thread.sleep(intervalMillis);
 
             } catch (IOException e) {
-
-                if (!running.get()) {
-                    break;
+                if (running.get()) {
+                    LOGGER.warning(String.format("[%s] Telemetry send failed: %s", nodeId, e.getMessage()));
+                    connectionManager.notifyConnectionLost(e);
+                    if (internetMonitor != null) {
+                        internetMonitor.triggerImmediateCheck();
+                    }
                 }
-
-                LOGGER.log(
-                        Level.WARNING,
-                        String.format(
-                                "[%s] Connection error: %s. Retrying in %d ms",
-                                nodeId,
-                                e.getMessage(),
-                                currentBackoff
-                        )
-                );
-
-                try {
-
-                    Thread.sleep(currentBackoff);
-
-                } catch (InterruptedException interruptedException) {
-
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-
-                currentBackoff = Math.min(
-                        currentBackoff * 2,
-                        maxBackoffMillis
-                );
-
-            } finally {
-
-                closeQuietly(socket);
-
-                currentSocket = null;
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
             }
         }
 
-        LOGGER.info(
-                "[" + nodeId + "] Telemetry agent stopped."
-        );
+        LOGGER.info(String.format("[%s] Telemetry agent loop terminated.", nodeId));
     }
 
-    // ================= STOP =================
-
+    /**
+     * Signals the agent to terminate cleanly and releases active socket descriptors.
+     */
     public synchronized void stop() {
-
         if (running.compareAndSet(true, false)) {
-
-            LOGGER.info(
-                    "[" + nodeId + "] Stopping telemetry agent..."
-            );
-
-            closeQuietly(currentSocket);
-
+            if (networkProbeClient != null) {
+                networkProbeClient.stop();
+            }
+            if (internetMonitor != null) {
+                internetMonitor.stop();
+            }
+            connectionManager.stop();
+            synchronized (stateSync) {
+                stateSync.notifyAll();
+            }
             if (workerThread != null) {
                 workerThread.interrupt();
             }
         }
     }
 
-    // ================= SOCKET CLEANUP =================
-
-    private void closeQuietly(Socket socket) {
-
-        if (socket != null && !socket.isClosed()) {
-
-            try {
-
-                socket.close();
-
-            } catch (IOException ignored) {
-            }
+    private String resolveLocalHostname() {
+        try {
+            return InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            String host = System.getenv("COMPUTERNAME");
+            if (host == null) host = System.getenv("HOSTNAME");
+            return (host != null && !host.isBlank()) ? host : "unknown-host";
         }
     }
-
-    // ================= CONFIGURATION =================
-
-    public void setInitialBackoffMillis(long value) {
-
-        if (value <= 0) {
-            throw new IllegalArgumentException(
-                    "Initial backoff must be positive"
-            );
-        }
-
-        initialBackoffMillis = value;
-    }
-
-    public void setMaxBackoffMillis(long value) {
-
-        if (value <= 0) {
-            throw new IllegalArgumentException(
-                    "Maximum backoff must be positive"
-            );
-        }
-
-        maxBackoffMillis = value;
-    }
-
-    public void setConnectTimeoutMillis(int value) {
-
-        if (value <= 0) {
-            throw new IllegalArgumentException(
-                    "Connection timeout must be positive"
-            );
-        }
-
-        connectTimeoutMillis = value;
-    }
-
-    // ================= GETTERS =================
 
     public boolean isRunning() {
         return running.get();
@@ -337,5 +308,71 @@ public class TelemetryAgent implements Runnable {
 
     public String getNodeId() {
         return nodeId;
+    }
+
+    public ConnectionManager getConnectionManager() {
+        return connectionManager;
+    }
+
+    public ConnectionState getConnectionState() {
+        return connectionManager.getState();
+    }
+
+    public Socket getCurrentSocket() {
+        return connectionManager.getActiveSocket();
+    }
+
+    public String getServerHost() {
+        return connectionManager.getCurrentHost();
+    }
+
+    public int getServerPort() {
+        return connectionManager.getCurrentPort();
+    }
+
+    public void setInitialBackoffMillis(long initialBackoffMillis) {
+        this.initialBackoffMillis = initialBackoffMillis;
+        this.connectionManager.updateBackoff(initialBackoffMillis, maxBackoffMillis);
+    }
+
+    public void setMaxBackoffMillis(long maxBackoffMillis) {
+        this.maxBackoffMillis = maxBackoffMillis;
+        this.connectionManager.updateBackoff(initialBackoffMillis, maxBackoffMillis);
+    }
+
+    public void setConnectTimeoutMillis(int connectTimeoutMillis) {
+        this.connectTimeoutMillis = connectTimeoutMillis;
+        this.connectionManager.setConnectTimeoutMillis(connectTimeoutMillis);
+    }
+
+    public void setDiscoveryClient(DiscoveryClient discoveryClient) {
+        this.connectionManager.setDiscoveryClient(discoveryClient);
+    }
+
+    public String getSelectedServerId() {
+        return this.connectionManager.getSelectedServerId();
+    }
+
+    public void setSelectedServerId(String selectedServerId) {
+        this.connectionManager.setSelectedServerId(selectedServerId);
+    }
+
+    public NetworkProbeClient getNetworkProbeClient() {
+        return networkProbeClient;
+    }
+
+    public int getProbePort() {
+        return probePort;
+    }
+
+    public void setProbePort(int probePort) {
+        this.probePort = probePort;
+        if (networkProbeClient != null) {
+            networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+        }
+    }
+
+    public InternetMonitor getInternetMonitor() {
+        return internetMonitor;
     }
 }

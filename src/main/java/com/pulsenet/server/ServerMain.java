@@ -3,6 +3,8 @@ package com.pulsenet.server;
 import com.pulsenet.common.net.NetworkUtils;
 import com.pulsenet.common.net.NetworkUtils.LanAddress;
 import com.pulsenet.server.dashboard.DashboardRenderer;
+import com.pulsenet.server.discovery.DiscoveryServer;
+import com.pulsenet.server.network.NetworkProbeServer;
 import com.pulsenet.server.network.TelemetryServer;
 import com.pulsenet.server.registry.NodeRegistry;
 import com.pulsenet.server.watchdog.WatchdogSupervisor;
@@ -34,6 +36,10 @@ public class ServerMain {
     public static void main(String[] args) {
         String host = "0.0.0.0";
         int port = 9000;
+        int udpPort = DiscoveryServer.DEFAULT_UDP_PORT;
+        int probePort = NetworkProbeServer.DEFAULT_PROBE_PORT;
+        String serverId = null;
+        boolean enableDiscovery = true;
         int timeoutSeconds = -1; // -1 means run indefinitely
         boolean headless = false;
         double watchdogTimeout = 5.0;
@@ -47,6 +53,20 @@ public class ServerMain {
                     break;
                 case "--port":
                     if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
+                    break;
+                case "--udp-port":
+                    if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    break;
+                case "--probe-port":
+                case "--udp-probe-port":
+                    if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
+                    break;
+                case "--server-id":
+                    if (i + 1 < args.length) serverId = args[++i];
+                    break;
+                case "--disable-discovery":
+                case "--no-discovery":
+                    enableDiscovery = false;
                     break;
                 case "--timeout":
                     if (i + 1 < args.length) timeoutSeconds = Integer.parseInt(args[++i]);
@@ -69,6 +89,10 @@ public class ServerMain {
             }
         }
 
+        if (serverId == null || serverId.isBlank()) {
+            serverId = generateDefaultServerId(port);
+        }
+
         // In ANSI mode the dashboard clears the screen at 2 Hz; route log records to a file so
         // they do not tear the dashboard. Headless mode keeps normal console logging.
         if (!headless) {
@@ -87,6 +111,12 @@ public class ServerMain {
         DashboardRenderer dashboard = new DashboardRenderer(registry, host, port, !headless,
                 System.out, 500L, displayHost);
 
+        DiscoveryServer discoveryServer = enableDiscovery
+                ? new DiscoveryServer("0.0.0.0", udpPort, host, port, probePort, serverId)
+                : null;
+
+        NetworkProbeServer probeServer = new NetworkProbeServer("0.0.0.0", probePort);
+
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
         // Register cooperative shutdown hook
@@ -94,6 +124,10 @@ public class ServerMain {
             LOGGER.info("Shutdown hook triggered. Stopping PulseNet server subsystems...");
             dashboard.stop();
             watchdog.stop();
+            if (discoveryServer != null) {
+                discoveryServer.stop();
+            }
+            probeServer.stop();
             server.stop();
             shutdownLatch.countDown();
             LOGGER.info("PulseNet server stopped successfully.");
@@ -102,14 +136,27 @@ public class ServerMain {
         try {
             server.start();
             watchdog.start();
+            try {
+                probeServer.start();
+            } catch (Exception e) {
+                LOGGER.warning("Failed to bind UDP NetworkProbeServer on port " + probePort + ": " + e.getMessage());
+            }
+            if (discoveryServer != null) {
+                try {
+                    discoveryServer.start();
+                } catch (Exception e) {
+                    LOGGER.warning("Failed to bind UDP DiscoveryServer on port " + udpPort + ": " + e.getMessage());
+                }
+            }
 
-            String banner = buildBanner(host, server.getPort(), lanAddresses, !headless);
+            String banner = buildBanner(host, server.getPort(), udpPort, probePort, lanAddresses, enableDiscovery, !headless);
             System.out.print(banner);
             System.out.flush();
             LOGGER.info("Startup banner:\n" + banner);
 
-            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms)",
-                    host, server.getPort(), watchdogTimeout, readTimeoutMillis));
+            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms, discovery=%s, probe=UDP:%d)",
+                    host, server.getPort(), watchdogTimeout, readTimeoutMillis,
+                    enableDiscovery ? ("UDP:" + udpPort) : "disabled", probePort));
 
             if (!headless) {
                 // Keep the banner readable before the first dashboard frame clears the screen.
@@ -127,6 +174,9 @@ public class ServerMain {
                     LOGGER.info("Execution timeout reached. Initiating graceful shutdown...");
                     dashboard.stop();
                     watchdog.stop();
+                    if (discoveryServer != null) {
+                        discoveryServer.stop();
+                    }
                     server.stop();
                 }
             } else {
@@ -156,19 +206,44 @@ public class ServerMain {
     }
 
     /**
-     * Builds the startup banner telling node operators which address to target.
-     *
-     * @param bindHost     configured bind address
-     * @param port         actual listening port
-     * @param lanAddresses candidate LAN IPv4 addresses (first one is advertised)
-     * @param logToFile    whether log records are being written to {@link #LOG_FILE}
-     * @return the multi-line banner text
+     * Builds the startup banner backward-compatible overload.
      */
     static String buildBanner(String bindHost, int port, List<LanAddress> lanAddresses, boolean logToFile) {
+        return buildBanner(bindHost, port, DiscoveryServer.DEFAULT_UDP_PORT, NetworkProbeServer.DEFAULT_PROBE_PORT,
+                lanAddresses, true, logToFile);
+    }
+
+    /**
+     * Builds the startup banner backward-compatible 6-parameter overload.
+     */
+    static String buildBanner(String bindHost, int port, int udpPort, List<LanAddress> lanAddresses,
+                              boolean discoveryActive, boolean logToFile) {
+        return buildBanner(bindHost, port, udpPort, NetworkProbeServer.DEFAULT_PROBE_PORT,
+                lanAddresses, discoveryActive, logToFile);
+    }
+
+    /**
+     * Builds the startup banner telling node operators which address to target.
+     *
+     * @param bindHost        configured bind address
+     * @param port            actual listening TCP port
+     * @param udpPort         listening UDP discovery port
+     * @param probePort       listening UDP probe port
+     * @param lanAddresses    candidate LAN IPv4 addresses (first one is advertised)
+     * @param discoveryActive whether UDP discovery is running
+     * @param logToFile       whether log records are being written to {@link #LOG_FILE}
+     * @return the multi-line banner text
+     */
+    static String buildBanner(String bindHost, int port, int udpPort, int probePort, List<LanAddress> lanAddresses,
+                              boolean discoveryActive, boolean logToFile) {
         StringBuilder sb = new StringBuilder();
         String rule = "=".repeat(DashboardRenderer.TABLE_WIDTH);
         sb.append(rule).append('\n');
-        sb.append(" PulseNet Aggregator Server listening on ").append(bindHost).append(':').append(port).append('\n');
+        sb.append(" PulseNet Aggregator Server listening on ").append(bindHost).append(':').append(port).append(" (TCP)\n");
+        if (discoveryActive) {
+            sb.append(" Automatic Node Discovery active on UDP port ").append(udpPort).append('\n');
+        }
+        sb.append(" Advanced Network Probing active on UDP port ").append(probePort).append('\n');
         sb.append(rule).append('\n');
 
         if (!NetworkUtils.isWildcard(bindHost)) {
@@ -178,7 +253,7 @@ public class ServerMain {
             sb.append(String.format(" Only agents on this machine can connect: 127.0.0.1:%d%n", port));
         } else {
             LanAddress primary = lanAddresses.get(0);
-            sb.append(String.format(" Agents should connect to: %s:%d (%s)%n",
+            sb.append(String.format(" Agents can auto-discover or connect to: %s:%d (%s)%n",
                     primary.address(), port, primary.label()));
             for (int i = 1; i < lanAddresses.size(); i++) {
                 LanAddress other = lanAddresses.get(i);
@@ -220,12 +295,46 @@ public class ServerMain {
         }
     }
 
+    /**
+     * Generates a stable default server identifier using the normalized host name and listener port,
+     * ensuring unique identification across distinct server hosts.
+     *
+     * @param port listening TCP port
+     * @return unique default server ID
+     */
+    public static String generateDefaultServerId(int port) {
+        String host = null;
+        try {
+            host = java.net.InetAddress.getLocalHost().getHostName();
+        } catch (Exception ignored) {
+        }
+        if (host == null || host.isBlank()) {
+            host = System.getenv("COMPUTERNAME");
+        }
+        if (host == null || host.isBlank()) {
+            host = System.getenv("HOSTNAME");
+        }
+        if (host == null || host.isBlank()) {
+            return DiscoveryServer.DEFAULT_SERVER_ID;
+        }
+        String normalized = host.trim().toLowerCase(java.util.Locale.ROOT);
+        int dot = normalized.indexOf('.');
+        if (dot > 0) {
+            normalized = normalized.substring(0, dot);
+        }
+        return "pulsenet-server-" + normalized + (port != 9000 ? ("-" + port) : "");
+    }
+
     private static void printUsage() {
         System.out.println("PulseNet Aggregator Server");
         System.out.println("Usage: java -jar pulsenet.jar server [options]");
         System.out.println("Options:");
         System.out.println("  --host <ip>              Listener host bind address (default: 0.0.0.0)");
-        System.out.println("  --port <port>            Listener port (default: 9000)");
+        System.out.println("  --port <port>            Listener TCP port (default: 9000)");
+        System.out.println("  --udp-port <port>        UDP discovery port (default: 9001)");
+        System.out.println("  --probe-port <port>      UDP network probe port (default: 9002)");
+        System.out.println("  --server-id <id>         Logical server identifier (default: pulsenet-central-server)");
+        System.out.println("  --disable-discovery      Disable UDP auto-discovery responder");
         System.out.println("  --timeout <seconds>      Run for N seconds then shut down cleanly");
         System.out.println("  --watchdog-timeout <sec> Seconds of silence before marking node OFFLINE (default: 5.0)");
         System.out.println("  --read-timeout <sec>     Drop clients silent this long (default: max(3 x watchdog, 15); 0 = off)");

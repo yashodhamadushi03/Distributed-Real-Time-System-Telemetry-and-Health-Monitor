@@ -60,6 +60,7 @@ class LauncherTest {
         assertTrue(text.contains("cluster"));
         assertTrue(text.contains("probe"));
         assertTrue(text.contains("stress"));
+        assertTrue(text.contains("ui"));
     }
 
     @Test

@@ -27,4 +27,4 @@ echo
 echo "Done. Copy this folder to each laptop (USB stick / GitHub Release):"
 echo "  $DIST"
 echo "Server laptop:  scripts/start-server.sh"
-echo "Node laptops:   scripts/start-agent.sh <SERVER_IP>"
+echo "Node laptops:   scripts/start-agent.sh    (auto-discovers host, or pass <SERVER_IP>)"

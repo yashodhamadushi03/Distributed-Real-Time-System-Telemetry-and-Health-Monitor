@@ -14,6 +14,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class NodeRegistry {
 
     private final Map<String, NodeRecord> nodes = new HashMap<>();
+    private final NetworkHistoryRegistry networkHistoryRegistry;
     private final ReentrantLock lock = new ReentrantLock();
 
     /** CPU percentage above which a node is considered over threshold. */
@@ -32,6 +33,14 @@ public class NodeRegistry {
     private static final int MAX_EVENTS = 50;
     private final Deque<String> eventLog = new ConcurrentLinkedDeque<>();
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss");
+
+    public NodeRegistry() {
+        this(new NetworkHistoryRegistry());
+    }
+
+    public NodeRegistry(NetworkHistoryRegistry networkHistoryRegistry) {
+        this.networkHistoryRegistry = networkHistoryRegistry != null ? networkHistoryRegistry : new NetworkHistoryRegistry();
+    }
 
     /**
      * Updates an existing node record or inserts a new one with the current system timestamp.
@@ -90,6 +99,9 @@ public class NodeRegistry {
             }
             if (connectionOwner != null) {
                 connectionOwners.put(nodeId, connectionOwner);
+            }
+            if (payload.getNetworkMetrics() != null) {
+                networkHistoryRegistry.recordSample(nodeId, payload.getNetworkMetrics(), now);
             }
             emitThresholdTransitions(nodeId, previousPayload, payload);
         } finally {
@@ -268,8 +280,21 @@ public class NodeRegistry {
             nodes.clear();
             connectionOwners.clear();
             eventLog.clear();
+            networkHistoryRegistry.clear();
         } finally {
             lock.unlock();
         }
+    }
+
+    public NetworkHistoryRegistry getNetworkHistoryRegistry() {
+        return networkHistoryRegistry;
+    }
+
+    public List<NetworkHistorySample> getNetworkHistory(String nodeId) {
+        return networkHistoryRegistry.getHistory(nodeId);
+    }
+
+    public List<NetworkHistorySample> getNetworkHistory(String nodeId, int limit) {
+        return networkHistoryRegistry.getHistory(nodeId, limit);
     }
 }

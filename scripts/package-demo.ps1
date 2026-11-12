@@ -28,15 +28,15 @@ try {
 
     Copy-Item "target\pulsenet.jar" $dist
     Copy-Item "DEMO.md" $dist
-    Get-ChildItem "scripts" -File |
+    Get-ChildItem "scripts" -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Extension -in ".sh", ".ps1", ".bat" -and $_.BaseName -ne "package-demo" } |
-        Copy-Item -Destination (Join-Path $dist "scripts")
+        Copy-Item -Destination (Join-Path $dist "scripts") -ErrorAction SilentlyContinue
 
     Write-Host ""
     Write-Host "Done. Copy this folder to each laptop (USB stick / GitHub Release):" -ForegroundColor Green
     Write-Host "  $dist"
     Write-Host "Server laptop:  scripts\start-server.bat   (or .ps1 / .sh)"
-    Write-Host "Node laptops:   scripts\start-agent.bat <SERVER_IP>"
+    Write-Host "Node laptops:   scripts\start-agent.bat    (auto-discovers host, or pass <SERVER_IP>)"
 }
 finally {
     Pop-Location

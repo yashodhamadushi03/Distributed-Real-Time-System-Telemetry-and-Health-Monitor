@@ -24,6 +24,8 @@ public class TelemetryPayload implements Serializable {
     private String nodeId;
     private long timestamp;
     private String status;
+    private NetworkMetrics networkMetrics;
+    private InternetConnectivityMetrics internetMetrics;
 
     // ================= CPU =================
 
@@ -75,17 +77,31 @@ public class TelemetryPayload implements Serializable {
     public TelemetryPayload() {
     }
 
-    // Keeps compatibility with the original constructor.
-    public TelemetryPayload(
-            String nodeId,
-            long timestamp,
-            double cpuPercent,
-            double memoryPercent,
-            double diskPercent,
-            int processCount,
-            String status
-    ) {
+    /**
+     * Legacy parameter constructor without network metrics.
+     */
+    public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
+                            double memoryPercent, double diskPercent,
+                            int processCount, String status) {
+        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, null, null);
+    }
 
+    /**
+     * Parameter constructor including network metrics.
+     */
+    public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
+                            double memoryPercent, double diskPercent,
+                            int processCount, String status, NetworkMetrics networkMetrics) {
+        this(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics, null);
+    }
+
+    /**
+     * Full parameter constructor including network metrics and internet connectivity metrics.
+     */
+    public TelemetryPayload(String nodeId, long timestamp, double cpuPercent,
+                            double memoryPercent, double diskPercent,
+                            int processCount, String status, NetworkMetrics networkMetrics,
+                            InternetConnectivityMetrics internetMetrics) {
         this.nodeId = nodeId;
         this.timestamp = timestamp;
         this.cpuPercent = cpuPercent;
@@ -93,6 +109,8 @@ public class TelemetryPayload implements Serializable {
         this.diskPercent = diskPercent;
         this.processCount = processCount;
         this.status = status;
+        this.networkMetrics = networkMetrics;
+        this.internetMetrics = internetMetrics;
     }
 
     // ================= JSON =================
@@ -336,36 +354,57 @@ public class TelemetryPayload implements Serializable {
 
     // ================= OBJECT METHODS =================
 
-    @Override
-    public String toString() {
+    public NetworkMetrics getNetworkMetrics() {
+        return networkMetrics;
+    }
 
-        return "TelemetryPayload{" +
-                "nodeId='" + nodeId + '\'' +
-                ", cpuPercent=" + cpuPercent +
-                ", memoryPercent=" + memoryPercent +
-                ", diskPercent=" + diskPercent +
-                ", batteryPercent=" + batteryPercent +
-                ", downloadBytesPerSecond=" + downloadBytesPerSecond +
-                ", uploadBytesPerSecond=" + uploadBytesPerSecond +
-                ", status='" + status + '\'' +
-                '}';
+    public void setNetworkMetrics(NetworkMetrics networkMetrics) {
+        this.networkMetrics = networkMetrics;
+    }
+
+    public InternetConnectivityMetrics getInternetMetrics() {
+        return internetMetrics;
+    }
+
+    public void setInternetMetrics(InternetConnectivityMetrics internetMetrics) {
+        this.internetMetrics = internetMetrics;
     }
 
     @Override
-    public boolean equals(Object object) {
-
-        if (this == object) return true;
-
-        if (!(object instanceof TelemetryPayload that)) {
-            return false;
-        }
-
-        return timestamp == that.timestamp
-                && Objects.equals(nodeId, that.nodeId);
+    public boolean equals(Object o) {
+        if (this == o) return true;
+        if (!(o instanceof TelemetryPayload that)) return false;
+        return timestamp == that.timestamp &&
+                Double.compare(that.cpuPercent, cpuPercent) == 0 &&
+                Double.compare(that.memoryPercent, memoryPercent) == 0 &&
+                Double.compare(that.diskPercent, diskPercent) == 0 &&
+                processCount == that.processCount &&
+                Objects.equals(nodeId, that.nodeId) &&
+                Objects.equals(status, that.status) &&
+                Objects.equals(networkMetrics, that.networkMetrics) &&
+                Objects.equals(internetMetrics, that.internetMetrics);
     }
 
     @Override
     public int hashCode() {
-        return Objects.hash(nodeId, timestamp);
+        return Objects.hash(nodeId, timestamp, cpuPercent, memoryPercent, diskPercent, processCount, status, networkMetrics, internetMetrics);
+    }
+
+    @Override
+    public String toString() {
+        return "TelemetryPayload{" +
+                "nodeId='" + nodeId + '\'' +
+                ", timestamp=" + timestamp +
+                ", cpuPercent=" + cpuPercent +
+                ", memoryPercent=" + memoryPercent +
+                ", diskPercent=" + diskPercent +
+                ", batteryPercent=" + batteryPercent +
+                ", processCount=" + processCount +
+                ", downloadBytesPerSecond=" + downloadBytesPerSecond +
+                ", uploadBytesPerSecond=" + uploadBytesPerSecond +
+                ", status='" + status + '\'' +
+                ", networkMetrics=" + networkMetrics +
+                ", internetMetrics=" + internetMetrics +
+                '}';
     }
 }
