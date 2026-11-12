@@ -25,3 +25,4 @@ class ConnectionStateTest {
         assertFalse(ConnectionState.DISCONNECTED.isTerminal());
     }
 }
+

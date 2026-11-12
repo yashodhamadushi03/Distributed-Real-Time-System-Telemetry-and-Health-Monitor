@@ -48,3 +48,4 @@ class BackoffCalculatorTest {
         assertThrows(IllegalArgumentException.class, () -> new BackoffCalculator(5000, 2000));
     }
 }
+

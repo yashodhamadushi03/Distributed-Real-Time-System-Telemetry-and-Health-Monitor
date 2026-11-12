@@ -67,3 +67,4 @@ class DiscoveryClientTest {
         assertTrue(hasLoopback, "Broadcast targets must include loopback address for local testing");
     }
 }
+

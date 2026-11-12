@@ -110,3 +110,4 @@ class DiscoveryMessageTest {
         assertEquals("127.0.0.1", s4.resolveConnectHost());
     }
 }
+
