@@ -128,7 +128,9 @@ public class TelemetryAgent implements Runnable {
      */
     @Override
     public void run() {
-        running.set(true);
+        if (!running.get()) {
+            return;
+        }
 
         // Initiate initial connection attempt
         connectionManager.connect();
