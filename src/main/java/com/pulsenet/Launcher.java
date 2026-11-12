@@ -43,6 +43,7 @@ public final class Launcher {
 
     private static Map<String, Subcommand> buildSubcommands() {
         Map<String, Subcommand> map = new LinkedHashMap<>();
+        map.put("ui", new Subcommand("Run the graphical Network Operations Center (JavaFX UI)", com.pulsenet.ui.PulseNetApp::main));
         map.put("server", new Subcommand("Run the aggregator server + live dashboard", ServerMain::main));
         map.put("agent", new Subcommand("Run a telemetry agent streaming this machine's metrics", AgentMain::main));
         map.put("cluster", new Subcommand("Run a simulated multi-node cluster (MockCluster)", MockCluster::main));
@@ -123,6 +124,7 @@ public final class Launcher {
         stream.println("Run 'java -jar pulsenet.jar <subcommand> --help' for subcommand options.");
         stream.println();
         stream.println("Examples:");
+        stream.println("  java -jar pulsenet.jar ui");
         stream.println("  java -jar pulsenet.jar server --port 9000");
         stream.println("  java -jar pulsenet.jar agent --discover");
         stream.println("  java -jar pulsenet.jar agent --host 192.168.137.1 --port 9000");
