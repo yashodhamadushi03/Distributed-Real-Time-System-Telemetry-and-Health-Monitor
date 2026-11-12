@@ -1,130 +1,548 @@
+
 package com.pulsenet.agent;
 
 import com.pulsenet.common.model.TelemetryPayload;
-import com.sun.management.OperatingSystemMXBean;
+
+import oshi.SystemInfo;
+import oshi.hardware.HardwareAbstractionLayer;
+import oshi.hardware.CentralProcessor;
+import oshi.hardware.GlobalMemory;
+import oshi.hardware.NetworkIF;
+import oshi.hardware.PowerSource;
+import oshi.hardware.Sensors;
+import oshi.software.os.OperatingSystem;
 
 import java.io.File;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Enumeration;
+import java.util.List;
 import java.lang.management.ManagementFactory;
 
-/**
- * Metric collector sampling host operating system telemetry:
- * CPU utilization, physical memory usage, disk storage saturation, and active processes.
- */
 public class MetricCollector {
 
-    private final OperatingSystemMXBean osBean;
-    private final File rootPartition;
+    private final SystemInfo systemInfo;
+    private final HardwareAbstractionLayer hardware;
+    private final CentralProcessor processor;
+    private final GlobalMemory memory;
+    private final Sensors sensors;
+    private final OperatingSystem operatingSystem;
 
-    /**
-     * Initializes metric collector with system management beans.
-     */
+    private final long startTime;
+
+    // CPU tracking
+    private long[] previousCpuTicks;
+
+    // Network tracking
+    private long previousNetworkReceived = -1;
+    private long previousNetworkSent = -1;
+    private long previousNetworkTime = -1;
+
+    // Battery diagnostic logging
+    private long lastBatteryDiagnosticTime = 0;
+
+    private final List<File> diskPartitions;
+
+    // ================= CONSTRUCTOR =================
+
     public MetricCollector() {
-        this.osBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
-        this.rootPartition = resolveRootPartition();
+
+        systemInfo = new SystemInfo();
+
+        hardware = systemInfo.getHardware();
+
+        processor = hardware.getProcessor();
+
+        previousCpuTicks = processor.getSystemCpuLoadTicks();
+
+        memory = hardware.getMemory();
+
+        sensors = hardware.getSensors();
+
+        operatingSystem = systemInfo.getOperatingSystem();
+
+        startTime = ManagementFactory
+                .getRuntimeMXBean()
+                .getStartTime();
+
+        diskPartitions = List.of(File.listRoots());
     }
 
-    /**
-     * Resolves the primary filesystem partition.
-     */
-    private File resolveRootPartition() {
-        File[] roots = File.listRoots();
-        if (roots != null && roots.length > 0) {
-            return roots[0];
+    // ================= MAIN COLLECTION METHOD =================
+
+    public synchronized TelemetryPayload collect(String nodeId) {
+
+        TelemetryPayload payload = new TelemetryPayload();
+
+        payload.setNodeId(nodeId);
+
+        payload.setTimestamp(System.currentTimeMillis());
+
+        // CPU
+        double cpu = sampleCpuPercent();
+
+        payload.setCpuPercent(round(cpu));
+
+        payload.setCpuCoreCount(
+                processor.getLogicalProcessorCount()
+        );
+
+        payload.setCpuTemperatureCelsius(
+                sampleCpuTemperature()
+        );
+
+        // MEMORY
+        long totalMemory = memory.getTotal();
+
+        long availableMemory = memory.getAvailable();
+
+        long usedMemory = Math.max(
+                0,
+                totalMemory - availableMemory
+        );
+
+        double memoryPercent = percentage(
+                usedMemory,
+                totalMemory
+        );
+
+        payload.setTotalMemoryBytes(totalMemory);
+
+        payload.setUsedMemoryBytes(usedMemory);
+
+        payload.setFreeMemoryBytes(availableMemory);
+
+        payload.setMemoryPercent(round(memoryPercent));
+
+        // DISK
+        long totalDisk = 0;
+
+        long freeDisk = 0;
+
+        for (File partition : diskPartitions) {
+
+            if (partition.exists()) {
+
+                totalDisk += partition.getTotalSpace();
+
+                freeDisk += partition.getUsableSpace();
+            }
         }
-        return new File(".");
+
+        long usedDisk = Math.max(
+                0,
+                totalDisk - freeDisk
+        );
+
+        payload.setTotalDiskBytes(totalDisk);
+
+        payload.setFreeDiskBytes(freeDisk);
+
+        payload.setDiskPercent(
+                round(percentage(usedDisk, totalDisk))
+        );
+
+        // PROCESSES
+        payload.setProcessCount(
+                sampleProcessCount()
+        );
+
+        // BATTERY
+        collectBattery(payload);
+
+        // NETWORK
+        collectNetwork(payload);
+
+        // SYSTEM INFORMATION
+        collectSystemInformation(payload);
+
+        // HEALTH STATUS
+        payload.setStatus(
+                determineStatus(
+                        payload.getCpuPercent(),
+                        payload.getMemoryPercent(),
+                        payload.getDiskPercent()
+                )
+        );
+
+        return payload;
     }
 
-    /**
-     * Samples the current host metrics and packages them into a TelemetryPayload.
-     *
-     * @param nodeId Unique identifier of the reporting node.
-     * @return Populated TelemetryPayload instance.
-     */
-    public TelemetryPayload collect(String nodeId) {
-        long timestamp = System.currentTimeMillis();
+    // ================= CPU =================
 
-        double cpuPercent = sampleCpuPercent();
-        double memoryPercent = sampleMemoryPercent();
-        double diskPercent = sampleDiskPercent();
-        int processCount = sampleProcessCount();
-        String status = determineStatus(cpuPercent, memoryPercent, diskPercent);
+    public synchronized double sampleCpuPercent() {
 
-        return new TelemetryPayload(
-                nodeId,
-                timestamp,
-                roundToOneDecimal(cpuPercent),
-                roundToOneDecimal(memoryPercent),
-                roundToOneDecimal(diskPercent),
-                processCount,
-                status
+        double cpuLoad =
+                processor.getSystemCpuLoadBetweenTicks(previousCpuTicks);
+
+        previousCpuTicks = processor.getSystemCpuLoadTicks();
+
+        if (Double.isNaN(cpuLoad)
+                || !Double.isFinite(cpuLoad)
+                || cpuLoad < 0) {
+
+            return 0;
+        }
+
+        return clamp(cpuLoad * 100.0);
+    }
+
+    private double sampleCpuTemperature() {
+
+        try {
+
+            double temperature = sensors.getCpuTemperature();
+
+            if (Double.isNaN(temperature) || temperature <= 0) {
+                return -1;
+            }
+
+            return round(temperature);
+
+        } catch (Exception e) {
+
+            return -1;
+        }
+    }
+
+    // ================= BATTERY =================
+
+    private void collectBattery(TelemetryPayload payload) {
+
+        try {
+
+            List<PowerSource> powerSources =
+                    hardware.getPowerSources();
+
+            if (powerSources.isEmpty()) {
+
+                payload.setBatteryAvailable(false);
+                payload.setBatteryPercent(-1);
+                payload.setBatteryCharging(false);
+                payload.setBatteryTimeRemainingSeconds(-1);
+
+                logBatteryDiagnostic(
+                        "No battery detected by OSHI."
+                );
+
+                return;
+            }
+
+            PowerSource battery = powerSources.get(0);
+
+            // Read actual capacity values
+            double currentCapacity =
+                    battery.getCurrentCapacity();
+
+            double maximumCapacity =
+                    battery.getMaxCapacity();
+
+            // Calculate battery percentage from capacity values
+            double batteryPercent = -1;
+
+            if (Double.isFinite(currentCapacity)
+                    && Double.isFinite(maximumCapacity)
+                    && currentCapacity >= 0
+                    && maximumCapacity > 0
+                    && currentCapacity <= maximumCapacity) {
+
+                batteryPercent =
+                        (currentCapacity / maximumCapacity) * 100.0;
+
+            } else {
+
+                // Fallback to OSHI percentage if capacities are invalid
+                double oshiPercentage =
+                        battery.getRemainingCapacityPercent() * 100.0;
+
+                if (Double.isFinite(oshiPercentage)
+                        && oshiPercentage >= 0
+                        && oshiPercentage <= 100) {
+
+                    batteryPercent = oshiPercentage;
+                }
+            }
+
+            payload.setBatteryAvailable(true);
+
+            payload.setBatteryPercent(
+                    batteryPercent >= 0
+                            ? round(clamp(batteryPercent))
+                            : -1
+            );
+
+            payload.setBatteryCharging(
+                    battery.isCharging()
+            );
+
+            // Remaining battery time
+            double remainingTime =
+                    battery.getTimeRemainingEstimated();
+
+            payload.setBatteryTimeRemainingSeconds(
+                    remainingTime >= 0 && Double.isFinite(remainingTime)
+                            ? (long) remainingTime
+                            : -1
+            );
+
+            // Diagnostic information
+            String diagnostic = String.format(
+                    "Battery: %s | Calculated Percentage: %.2f%%"
+                            + " | OSHI Percentage: %.2f%%"
+                            + " | Current Capacity: %.0f"
+                            + " | Maximum Capacity: %.0f"
+                            + " | Charging: %s",
+                    battery.getName(),
+                    batteryPercent,
+                    battery.getRemainingCapacityPercent() * 100.0,
+                    currentCapacity,
+                    maximumCapacity,
+                    battery.isCharging()
+            );
+
+            logBatteryDiagnostic(diagnostic);
+
+        } catch (Exception e) {
+
+            payload.setBatteryAvailable(false);
+            payload.setBatteryPercent(-1);
+            payload.setBatteryCharging(false);
+            payload.setBatteryTimeRemainingSeconds(-1);
+
+            logBatteryDiagnostic(
+                    "Battery collection failed: " + e.getMessage()
+            );
+        }
+    }
+
+    // Print battery diagnostics every 10 seconds
+    private void logBatteryDiagnostic(String message) {
+
+        long currentTime = System.currentTimeMillis();
+
+        if (currentTime - lastBatteryDiagnosticTime >= 10_000) {
+
+            System.out.println(
+                    "[PULSENET BATTERY DIAGNOSTIC] " + message
+            );
+
+            lastBatteryDiagnosticTime = currentTime;
+        }
+    }
+
+    // ================= NETWORK =================
+
+    private void collectNetwork(TelemetryPayload payload) {
+
+        long received = 0;
+
+        long sent = 0;
+
+        try {
+
+            List<NetworkIF> interfaces =
+                    hardware.getNetworkIFs();
+
+            for (NetworkIF network : interfaces) {
+
+                try {
+
+                    network.updateAttributes();
+
+                    if (network.getName() == null) {
+                        continue;
+                    }
+
+                    if (network.getBytesRecv() >= 0) {
+                        received += network.getBytesRecv();
+                    }
+
+                    if (network.getBytesSent() >= 0) {
+                        sent += network.getBytesSent();
+                    }
+
+                } catch (Exception ignored) {
+                    // Skip unavailable network interface
+                }
+            }
+
+        } catch (Exception ignored) {
+            // Network information unavailable
+        }
+
+        long currentTime = System.currentTimeMillis();
+
+        double downloadSpeed = 0;
+
+        double uploadSpeed = 0;
+
+        if (previousNetworkTime > 0
+                && previousNetworkReceived >= 0
+                && previousNetworkSent >= 0) {
+
+            long elapsed =
+                    currentTime - previousNetworkTime;
+
+            if (elapsed > 0) {
+
+                downloadSpeed =
+                        Math.max(0, received - previousNetworkReceived)
+                                * 1000.0 / elapsed;
+
+                uploadSpeed =
+                        Math.max(0, sent - previousNetworkSent)
+                                * 1000.0 / elapsed;
+            }
+        }
+
+        previousNetworkReceived = received;
+
+        previousNetworkSent = sent;
+
+        previousNetworkTime = currentTime;
+
+        payload.setTotalBytesReceived(received);
+
+        payload.setTotalBytesSent(sent);
+
+        payload.setDownloadBytesPerSecond(
+                round(downloadSpeed)
+        );
+
+        payload.setUploadBytesPerSecond(
+                round(uploadSpeed)
         );
     }
 
-    /**
-     * Reads system-wide CPU utilization percentage (0.0% - 100.0%).
-     */
-    public double sampleCpuPercent() {
-        double cpuLoad = osBean.getCpuLoad();
-        // getCpuLoad() can return negative during the initial sampling interval
-        if (cpuLoad < 0.0 || Double.isNaN(cpuLoad)) {
-            cpuLoad = osBean.getProcessCpuLoad();
-        }
-        if (cpuLoad < 0.0 || Double.isNaN(cpuLoad)) {
-            return 0.0;
-        }
-        return Math.min(100.0, Math.max(0.0, cpuLoad * 100.0));
+    // ================= SYSTEM INFORMATION =================
+
+    private void collectSystemInformation(TelemetryPayload payload) {
+
+        payload.setOperatingSystem(
+                operatingSystem.getFamily() + " "
+                        + operatingSystem.getVersionInfo().getVersion()
+        );
+
+        payload.setHostName(getHostName());
+
+        payload.setIpAddress(getLocalIpAddress());
+
+        long uptime = operatingSystem.getSystemUptime();
+
+        payload.setUptimeSeconds(Math.max(0, uptime));
     }
 
-    /**
-     * Calculates system physical memory saturation percentage.
-     */
-    public double sampleMemoryPercent() {
-        long totalMemory = osBean.getTotalMemorySize();
-        long freeMemory = osBean.getFreeMemorySize();
-        if (totalMemory <= 0) {
-            return 0.0;
-        }
-        long usedMemory = totalMemory - freeMemory;
-        double memPercent = ((double) usedMemory / totalMemory) * 100.0;
-        return Math.min(100.0, Math.max(0.0, memPercent));
-    }
+    private String getHostName() {
 
-    /**
-     * Calculates storage saturation percentage on the primary partition.
-     */
-    public double sampleDiskPercent() {
-        long totalSpace = rootPartition.getTotalSpace();
-        long usableSpace = rootPartition.getUsableSpace();
-        if (totalSpace <= 0) {
-            return 0.0;
-        }
-        long usedSpace = totalSpace - usableSpace;
-        double diskPercent = ((double) usedSpace / totalSpace) * 100.0;
-        return Math.min(100.0, Math.max(0.0, diskPercent));
-    }
-
-    /**
-     * Counts the total number of running OS processes.
-     */
-    public int sampleProcessCount() {
         try {
-            return (int) ProcessHandle.allProcesses().count();
-        } catch (SecurityException | UnsupportedOperationException e) {
-            return 1;
+
+            return InetAddress.getLocalHost().getHostName();
+
+        } catch (Exception e) {
+
+            return "Unknown";
         }
     }
 
-    /**
-     * Evaluates health threshold: WARNING if CPU > 85% or Memory > 90%, else HEALTHY.
-     */
-    public String determineStatus(double cpuPercent, double memoryPercent, double diskPercent) {
-        if (cpuPercent > 85.0 || memoryPercent > 90.0 || diskPercent > 95.0) {
+    private String getLocalIpAddress() {
+
+        try {
+
+            Enumeration<NetworkInterface> interfaces =
+                    NetworkInterface.getNetworkInterfaces();
+
+            while (interfaces.hasMoreElements()) {
+
+                NetworkInterface network =
+                        interfaces.nextElement();
+
+                if (network.isLoopback() || !network.isUp()) {
+                    continue;
+                }
+
+                Enumeration<InetAddress> addresses =
+                        network.getInetAddresses();
+
+                while (addresses.hasMoreElements()) {
+
+                    InetAddress address =
+                            addresses.nextElement();
+
+                    if (!address.isLoopbackAddress()
+                            && address.getAddress().length == 4) {
+
+                        return address.getHostAddress();
+                    }
+                }
+            }
+
+        } catch (Exception ignored) {
+        }
+
+        return "Unknown";
+    }
+
+    // ================= PROCESS COUNT =================
+
+    public int sampleProcessCount() {
+
+        try {
+
+            return operatingSystem.getProcessCount();
+
+        } catch (Exception e) {
+
+            return 0;
+        }
+    }
+
+    // ================= HEALTH STATUS =================
+
+    public String determineStatus(
+            double cpuPercent,
+            double memoryPercent,
+            double diskPercent
+    ) {
+
+        if (cpuPercent > 85
+                || memoryPercent > 90
+                || diskPercent > 95) {
+
             return "WARNING";
         }
+
         return "HEALTHY";
     }
 
-    private double roundToOneDecimal(double val) {
-        return Math.round(val * 10.0) / 10.0;
+    // ================= UTILITY METHODS =================
+
+    private double percentage(long used, long total) {
+
+        if (total <= 0) {
+            return 0;
+        }
+
+        return clamp(
+                ((double) used / total) * 100.0
+        );
+    }
+
+    private double clamp(double value) {
+
+        return Math.max(
+                0,
+                Math.min(100, value)
+        );
+    }
+
+    private double round(double value) {
+
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    // ================= GETTERS =================
+
+    public long getStartTime() {
+        return startTime;
     }
 }
