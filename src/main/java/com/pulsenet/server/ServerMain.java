@@ -3,6 +3,7 @@ package com.pulsenet.server;
 import com.pulsenet.common.net.NetworkUtils;
 import com.pulsenet.common.net.NetworkUtils.LanAddress;
 import com.pulsenet.server.dashboard.DashboardRenderer;
+import com.pulsenet.server.discovery.DiscoveryServer;
 import com.pulsenet.server.network.TelemetryServer;
 import com.pulsenet.server.registry.NodeRegistry;
 import com.pulsenet.server.watchdog.WatchdogSupervisor;
@@ -34,6 +35,9 @@ public class ServerMain {
     public static void main(String[] args) {
         String host = "0.0.0.0";
         int port = 9000;
+        int udpPort = DiscoveryServer.DEFAULT_UDP_PORT;
+        String serverId = DiscoveryServer.DEFAULT_SERVER_ID;
+        boolean enableDiscovery = true;
         int timeoutSeconds = -1; // -1 means run indefinitely
         boolean headless = false;
         double watchdogTimeout = 5.0;
@@ -47,6 +51,16 @@ public class ServerMain {
                     break;
                 case "--port":
                     if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
+                    break;
+                case "--udp-port":
+                    if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    break;
+                case "--server-id":
+                    if (i + 1 < args.length) serverId = args[++i];
+                    break;
+                case "--disable-discovery":
+                case "--no-discovery":
+                    enableDiscovery = false;
                     break;
                 case "--timeout":
                     if (i + 1 < args.length) timeoutSeconds = Integer.parseInt(args[++i]);
@@ -87,6 +101,10 @@ public class ServerMain {
         DashboardRenderer dashboard = new DashboardRenderer(registry, host, port, !headless,
                 System.out, 500L, displayHost);
 
+        DiscoveryServer discoveryServer = enableDiscovery
+                ? new DiscoveryServer("0.0.0.0", udpPort, host, port, serverId)
+                : null;
+
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
         // Register cooperative shutdown hook
@@ -94,6 +112,9 @@ public class ServerMain {
             LOGGER.info("Shutdown hook triggered. Stopping PulseNet server subsystems...");
             dashboard.stop();
             watchdog.stop();
+            if (discoveryServer != null) {
+                discoveryServer.stop();
+            }
             server.stop();
             shutdownLatch.countDown();
             LOGGER.info("PulseNet server stopped successfully.");
@@ -102,14 +123,21 @@ public class ServerMain {
         try {
             server.start();
             watchdog.start();
+            if (discoveryServer != null) {
+                try {
+                    discoveryServer.start();
+                } catch (Exception e) {
+                    LOGGER.warning("Failed to bind UDP DiscoveryServer on port " + udpPort + ": " + e.getMessage());
+                }
+            }
 
-            String banner = buildBanner(host, server.getPort(), lanAddresses, !headless);
+            String banner = buildBanner(host, server.getPort(), udpPort, lanAddresses, enableDiscovery, !headless);
             System.out.print(banner);
             System.out.flush();
             LOGGER.info("Startup banner:\n" + banner);
 
-            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms)",
-                    host, server.getPort(), watchdogTimeout, readTimeoutMillis));
+            LOGGER.info(String.format("PulseNet Aggregator Server initialized on %s:%d (watchdog=%.1fs, read-timeout=%dms, discovery=%s)",
+                    host, server.getPort(), watchdogTimeout, readTimeoutMillis, enableDiscovery ? ("UDP:" + udpPort) : "disabled"));
 
             if (!headless) {
                 // Keep the banner readable before the first dashboard frame clears the screen.
@@ -127,6 +155,9 @@ public class ServerMain {
                     LOGGER.info("Execution timeout reached. Initiating graceful shutdown...");
                     dashboard.stop();
                     watchdog.stop();
+                    if (discoveryServer != null) {
+                        discoveryServer.stop();
+                    }
                     server.stop();
                 }
             } else {
@@ -156,19 +187,32 @@ public class ServerMain {
     }
 
     /**
-     * Builds the startup banner telling node operators which address to target.
-     *
-     * @param bindHost     configured bind address
-     * @param port         actual listening port
-     * @param lanAddresses candidate LAN IPv4 addresses (first one is advertised)
-     * @param logToFile    whether log records are being written to {@link #LOG_FILE}
-     * @return the multi-line banner text
+     * Builds the startup banner backward-compatible overload.
      */
     static String buildBanner(String bindHost, int port, List<LanAddress> lanAddresses, boolean logToFile) {
+        return buildBanner(bindHost, port, DiscoveryServer.DEFAULT_UDP_PORT, lanAddresses, true, logToFile);
+    }
+
+    /**
+     * Builds the startup banner telling node operators which address to target.
+     *
+     * @param bindHost        configured bind address
+     * @param port            actual listening TCP port
+     * @param udpPort         listening UDP discovery port
+     * @param lanAddresses    candidate LAN IPv4 addresses (first one is advertised)
+     * @param discoveryActive whether UDP discovery is running
+     * @param logToFile       whether log records are being written to {@link #LOG_FILE}
+     * @return the multi-line banner text
+     */
+    static String buildBanner(String bindHost, int port, int udpPort, List<LanAddress> lanAddresses,
+                              boolean discoveryActive, boolean logToFile) {
         StringBuilder sb = new StringBuilder();
         String rule = "=".repeat(DashboardRenderer.TABLE_WIDTH);
         sb.append(rule).append('\n');
-        sb.append(" PulseNet Aggregator Server listening on ").append(bindHost).append(':').append(port).append('\n');
+        sb.append(" PulseNet Aggregator Server listening on ").append(bindHost).append(':').append(port).append(" (TCP)\n");
+        if (discoveryActive) {
+            sb.append(" Automatic Node Discovery active on UDP port ").append(udpPort).append('\n');
+        }
         sb.append(rule).append('\n');
 
         if (!NetworkUtils.isWildcard(bindHost)) {
@@ -178,7 +222,7 @@ public class ServerMain {
             sb.append(String.format(" Only agents on this machine can connect: 127.0.0.1:%d%n", port));
         } else {
             LanAddress primary = lanAddresses.get(0);
-            sb.append(String.format(" Agents should connect to: %s:%d (%s)%n",
+            sb.append(String.format(" Agents can auto-discover or connect to: %s:%d (%s)%n",
                     primary.address(), port, primary.label()));
             for (int i = 1; i < lanAddresses.size(); i++) {
                 LanAddress other = lanAddresses.get(i);
@@ -225,7 +269,10 @@ public class ServerMain {
         System.out.println("Usage: java -jar pulsenet.jar server [options]");
         System.out.println("Options:");
         System.out.println("  --host <ip>              Listener host bind address (default: 0.0.0.0)");
-        System.out.println("  --port <port>            Listener port (default: 9000)");
+        System.out.println("  --port <port>            Listener TCP port (default: 9000)");
+        System.out.println("  --udp-port <port>        UDP discovery port (default: 9001)");
+        System.out.println("  --server-id <id>         Logical server identifier (default: pulsenet-central-server)");
+        System.out.println("  --disable-discovery      Disable UDP auto-discovery responder");
         System.out.println("  --timeout <seconds>      Run for N seconds then shut down cleanly");
         System.out.println("  --watchdog-timeout <sec> Seconds of silence before marking node OFFLINE (default: 5.0)");
         System.out.println("  --read-timeout <sec>     Drop clients silent this long (default: max(3 x watchdog, 15); 0 = off)");

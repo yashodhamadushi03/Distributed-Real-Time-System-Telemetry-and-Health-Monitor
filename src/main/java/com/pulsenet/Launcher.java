@@ -124,6 +124,7 @@ public final class Launcher {
         stream.println();
         stream.println("Examples:");
         stream.println("  java -jar pulsenet.jar server --port 9000");
+        stream.println("  java -jar pulsenet.jar agent --discover");
         stream.println("  java -jar pulsenet.jar agent --host 192.168.137.1 --port 9000");
         stream.println("  java -jar pulsenet.jar cluster --host 192.168.137.1 --nodes 5");
         stream.println("  java -jar pulsenet.jar probe --host 192.168.137.1");

@@ -1,5 +1,7 @@
 package com.pulsenet.agent;
 
+import com.pulsenet.agent.discovery.DiscoveryClient;
+
 import java.net.InetAddress;
 import java.util.Locale;
 import java.util.concurrent.CountDownLatch;
@@ -7,6 +9,9 @@ import java.util.logging.Logger;
 
 /**
  * Command-line entry point for running a standalone PulseNet telemetry agent.
+ *
+ * <p>Supports both manual connection mode (explicit {@code --host} and {@code --port})
+ * and UDP automatic discovery mode ({@code --discover}).
  */
 public class AgentMain {
 
@@ -17,12 +22,29 @@ public class AgentMain {
         int port = 9000;
         String nodeId = generateDefaultNodeId();
         long intervalMillis = 1000L;
+        boolean discover = false;
+        int udpPort = DiscoveryClient.DEFAULT_UDP_PORT;
+        String preferredServerId = null;
+        boolean hostExplicitlySet = false;
 
         // Parse command line arguments
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
+                case "--discover":
+                case "--auto-discover":
+                    discover = true;
+                    break;
+                case "--udp-port":
+                    if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    break;
+                case "--server-id":
+                    if (i + 1 < args.length) preferredServerId = args[++i];
+                    break;
                 case "--host":
-                    if (i + 1 < args.length) host = args[++i];
+                    if (i + 1 < args.length) {
+                        host = args[++i];
+                        hostExplicitlySet = true;
+                    }
                     break;
                 case "--port":
                     if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
@@ -42,17 +64,32 @@ public class AgentMain {
             }
         }
 
-        LOGGER.info(String.format("Initializing PulseNet Telemetry Agent [Node: %s] -> %s:%d (Interval: %dms)",
-                nodeId, host, port, intervalMillis));
+        TelemetryAgent agent;
+        if (discover) {
+            LOGGER.info(String.format("Initializing PulseNet Telemetry Agent [Node: %s] in AUTO-DISCOVERY mode (UDP: %d)",
+                    nodeId, udpPort));
+            DiscoveryClient discoveryClient = new DiscoveryClient(nodeId, udpPort, 3000, 3, 2000L, preferredServerId);
+            if (hostExplicitlySet) {
+                // Discovery mode with explicit manual fallback
+                agent = new TelemetryAgent(discoveryClient, host, port, nodeId, intervalMillis);
+            } else {
+                agent = new TelemetryAgent(discoveryClient, nodeId, intervalMillis);
+            }
+        } else {
+            LOGGER.info(String.format("Initializing PulseNet Telemetry Agent [Node: %s] -> %s:%d (Interval: %dms)",
+                    nodeId, host, port, intervalMillis));
+            agent = new TelemetryAgent(host, port, nodeId, intervalMillis);
+        }
 
-        TelemetryAgent agent = new TelemetryAgent(host, port, nodeId, intervalMillis);
         CountDownLatch shutdownLatch = new CountDownLatch(1);
 
         // Register JVM cooperative shutdown hook
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            System.out.println("\n[SHUTDOWN] Shutdown signal received. Stopping Telemetry Agent...");
             LOGGER.info("Shutdown signal received. Stopping Telemetry Agent...");
             agent.stop();
             shutdownLatch.countDown();
+            LOGGER.info("Telemetry Agent stopped cleanly.");
         }));
 
         agent.start();
@@ -128,8 +165,11 @@ public class AgentMain {
         System.out.println("PulseNet Telemetry Agent");
         System.out.println("Usage: java -cp <jar> com.pulsenet.agent.AgentMain [options]");
         System.out.println("Options:");
+        System.out.println("  --discover             Enable UDP-based automatic server discovery on LAN");
+        System.out.println("  --udp-port <port>      UDP discovery port (default: 9001)");
+        System.out.println("  --server-id <id>       Preferred server ID when multiple servers are present");
         System.out.println("  --host <ip/hostname>   Aggregator server host (default: 127.0.0.1)");
-        System.out.println("  --port <port>          Aggregator server port (default: 9000)");
+        System.out.println("  --port <port>          Aggregator server TCP port (default: 9000)");
         System.out.println("  --node-id <id>         Unique node identifier (default: lower-cased hostname)");
         System.out.println("  --interval <ms>        Telemetry sample interval in ms (default: 1000)");
     }
