@@ -28,10 +28,12 @@ public class DiscoveryClient {
 
     private final String agentId;
     private final int udpPort;
+    private final List<Integer> udpPorts;
     private final int timeoutMillis;
     private final int maxAttempts;
     private final long retryDelayMillis;
     private final String preferredServerId;
+    private volatile ServerSelector serverSelector;
 
     public DiscoveryClient(String agentId) {
         this(agentId, DEFAULT_UDP_PORT, DEFAULT_TIMEOUT_MILLIS, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_DELAY_MILLIS, null);
@@ -43,26 +45,77 @@ public class DiscoveryClient {
 
     public DiscoveryClient(String agentId, int udpPort, int timeoutMillis, int maxAttempts,
                            long retryDelayMillis, String preferredServerId) {
+        this(agentId, udpPort, timeoutMillis, maxAttempts, retryDelayMillis, preferredServerId, null);
+    }
+
+    public DiscoveryClient(String agentId, int udpPort, int timeoutMillis, int maxAttempts,
+                           long retryDelayMillis, String preferredServerId, ServerSelector serverSelector) {
+        this(agentId, List.of(udpPort), timeoutMillis, maxAttempts, retryDelayMillis, preferredServerId, serverSelector);
+    }
+
+    public DiscoveryClient(String agentId, List<Integer> udpPorts, int timeoutMillis, int maxAttempts,
+                           long retryDelayMillis, String preferredServerId, ServerSelector serverSelector) {
         if (agentId == null || agentId.isBlank()) {
             throw new IllegalArgumentException("agentId must not be null or blank");
         }
-        if (udpPort <= 0 || udpPort > 65535) {
-            throw new IllegalArgumentException("Invalid UDP port: " + udpPort);
+        if (udpPorts == null || udpPorts.isEmpty()) {
+            throw new IllegalArgumentException("udpPorts must not be null or empty");
+        }
+        for (int p : udpPorts) {
+            if (p <= 0 || p > 65535) {
+                throw new IllegalArgumentException("Invalid UDP port: " + p);
+            }
         }
         this.agentId = agentId;
-        this.udpPort = udpPort;
+        this.udpPorts = new ArrayList<>(udpPorts);
+        this.udpPort = this.udpPorts.get(0);
         this.timeoutMillis = timeoutMillis;
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retryDelayMillis = Math.max(0, retryDelayMillis);
         this.preferredServerId = preferredServerId;
+        this.serverSelector = serverSelector;
+    }
+
+    public void setServerSelector(ServerSelector serverSelector) {
+        this.serverSelector = serverSelector;
+    }
+
+    public ServerSelector getServerSelector() {
+        return serverSelector;
+    }
+
+    public String getPreferredServerId() {
+        return preferredServerId;
+    }
+
+    public int getTimeoutMillis() {
+        return timeoutMillis;
+    }
+
+    public int getMaxAttempts() {
+        return maxAttempts;
+    }
+
+    public long getRetryDelayMillis() {
+        return retryDelayMillis;
     }
 
     /**
-     * Executes the automatic server discovery protocol.
+     * Executes automatic server discovery using the default configured ServerSelector.
      *
      * @return Optional containing DiscoveredServer coordinates if found, or empty if no server responded
      */
     public Optional<DiscoveredServer> discover() {
+        return discover(this.serverSelector);
+    }
+
+    /**
+     * Executes automatic server discovery using a custom ServerSelector.
+     *
+     * @param selector custom ServerSelector for resolving multiple candidates
+     * @return Optional containing DiscoveredServer coordinates if found, or empty
+     */
+    public Optional<DiscoveredServer> discover(ServerSelector selector) {
         System.out.println("[DISCOVERY] Starting automatic server discovery...");
         LOGGER.info(String.format("[%s] Initiating server discovery on UDP port %d (attempts=%d, timeout=%dms)",
                 agentId, udpPort, maxAttempts, timeoutMillis));
@@ -73,7 +126,7 @@ public class DiscoveryClient {
 
             List<DiscoveredServer> responses = broadcastAndCollectResponses();
             if (!responses.isEmpty()) {
-                DiscoveredServer chosen = selectServer(responses, preferredServerId);
+                DiscoveredServer chosen = selectServer(responses, preferredServerId, selector);
                 if (chosen != null) {
                     System.out.println("[DISCOVERY] PulseNet server discovered!");
                     System.out.println("[DISCOVERY] Server ID: " + chosen.serverId());
@@ -101,6 +154,15 @@ public class DiscoveryClient {
     }
 
     /**
+     * Executes a single broadcast pass and returns all unique responding PulseNet servers on the LAN.
+     *
+     * @return list of distinct DiscoveredServer instances
+     */
+    public List<DiscoveredServer> discoverAll() {
+        return broadcastAndCollectResponses();
+    }
+
+    /**
      * Sends broadcast requests and collects valid responses until the discovery window expires.
      */
     List<DiscoveredServer> broadcastAndCollectResponses() {
@@ -113,14 +175,16 @@ public class DiscoveryClient {
             DiscoveryMessage request = DiscoveryMessage.createRequest(agentId, preferredServerId);
             byte[] payload = request.toBytes();
 
-            // Transmit request to candidate broadcast and loopback destinations
+            // Transmit request to candidate broadcast and loopback destinations across configured UDP ports
             List<InetAddress> targets = getBroadcastTargets();
-            for (InetAddress target : targets) {
-                try {
-                    DatagramPacket packet = new DatagramPacket(payload, payload.length, target, udpPort);
-                    socket.send(packet);
-                } catch (IOException e) {
-                    LOGGER.fine("Failed to broadcast on target " + target + ": " + e.getMessage());
+            for (int port : udpPorts) {
+                for (InetAddress target : targets) {
+                    try {
+                        DatagramPacket packet = new DatagramPacket(payload, payload.length, target, port);
+                        socket.send(packet);
+                    } catch (IOException e) {
+                        LOGGER.fine("Failed to broadcast on target " + target + ":" + port + " - " + e.getMessage());
+                    }
                 }
             }
 
@@ -141,21 +205,16 @@ public class DiscoveryClient {
                             rxPacket.getLength()
                     );
 
-                    if (reply.isValidResponse()) {
+                    if (reply.isValidResponse() && rxPacket.getAddress() != null) {
                         DiscoveredServer server = new DiscoveredServer(
                                 reply.getServerId(),
                                 reply.getTcpHost(),
                                 reply.getTcpPort(),
                                 rxPacket.getAddress()
                         );
-                        responses.put(server.serverId(), server);
-                        // If we received a response matching our preferred server, we can stop waiting early
-                        if (preferredServerId != null && preferredServerId.equals(server.serverId())) {
-                            break;
-                        }
-                        // Give a brief window (200ms) for competing servers to reply, then complete
-                        if (preferredServerId == null && deadline - System.currentTimeMillis() > 200) {
-                            deadline = System.currentTimeMillis() + 200;
+                        String resolvedHost = server.resolveConnectHost();
+                        if (resolvedHost != null && !resolvedHost.isBlank()) {
+                            responses.put(server.serverId(), server);
                         }
                     } else {
                         LOGGER.fine("Received non-conforming discovery response from " + rxPacket.getSocketAddress());
@@ -176,17 +235,42 @@ public class DiscoveryClient {
 
     /**
      * Deterministic server selection policy:
-     * 1. If preferredServerId is specified, prioritize matching server ID.
-     * 2. Otherwise, select the server with lexicographically lowest serverId for consistency.
+     * 1. If exactly one candidate, automatically select it (Scenario A).
+     * 2. If multiple candidates (Scenario B):
+     *    a. If preferredServerId matches a candidate, automatically select it.
+     *    b. If selector is provided, delegate to selector (e.g. interactive menu).
+     *    c. Otherwise, fallback to lexicographically lowest serverId.
      *
      * @param candidates        list of discovered servers
      * @param preferredServerId optional preferred server ID
      * @return selected server or null if candidates is empty
      */
     public static DiscoveredServer selectServer(List<DiscoveredServer> candidates, String preferredServerId) {
+        return selectServer(candidates, preferredServerId, null);
+    }
+
+    /**
+     * Server selection policy with custom ServerSelector support.
+     *
+     * @param candidates        list of discovered servers
+     * @param preferredServerId optional preferred server ID
+     * @param selector          custom ServerSelector (can be null)
+     * @return selected server or null if candidates is empty
+     */
+    public static DiscoveredServer selectServer(List<DiscoveredServer> candidates,
+                                                String preferredServerId,
+                                                ServerSelector selector) {
         if (candidates == null || candidates.isEmpty()) {
             return null;
         }
+
+        // Scenario A: Exactly one server discovered -> auto-select without asking
+        if (candidates.size() == 1) {
+            return candidates.get(0);
+        }
+
+        // Scenario B: Multiple servers discovered
+        // B.1 Check whether preferred or saved serverId is available
         if (preferredServerId != null && !preferredServerId.isBlank()) {
             for (DiscoveredServer server : candidates) {
                 if (preferredServerId.equals(server.serverId())) {
@@ -194,7 +278,13 @@ public class DiscoveryClient {
                 }
             }
         }
-        // Deterministic sort by serverId
+
+        // B.2 Delegate to custom/interactive selector
+        if (selector != null) {
+            return selector.select(candidates);
+        }
+
+        // B.3 Deterministic sort fallback when no selector is configured
         List<DiscoveredServer> sorted = new ArrayList<>(candidates);
         sorted.sort(Comparator.comparing(DiscoveredServer::serverId));
         return sorted.get(0);
@@ -250,22 +340,6 @@ public class DiscoveryClient {
 
     public int getUdpPort() {
         return udpPort;
-    }
-
-    public int getTimeoutMillis() {
-        return timeoutMillis;
-    }
-
-    public int getMaxAttempts() {
-        return maxAttempts;
-    }
-
-    public long getRetryDelayMillis() {
-        return retryDelayMillis;
-    }
-
-    public String getPreferredServerId() {
-        return preferredServerId;
     }
 }
 

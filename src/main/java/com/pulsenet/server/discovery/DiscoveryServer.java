@@ -134,15 +134,6 @@ public class DiscoveryServer implements Runnable {
                 return;
             }
 
-            // Check if client requested a specific preferred server ID
-            if (request.getPreferredServerId() != null
-                    && !request.getPreferredServerId().isBlank()
-                    && !request.getPreferredServerId().equals(this.serverId)) {
-                LOGGER.fine(String.format("Ignoring request for preferred server '%s' (this server is '%s')",
-                        request.getPreferredServerId(), this.serverId));
-                return;
-            }
-
             String advertisedHost = resolveAdvertisedHost();
             DiscoveryMessage response = DiscoveryMessage.createResponse(serverId, advertisedHost, tcpPort);
             byte[] responseBytes = response.toBytes();

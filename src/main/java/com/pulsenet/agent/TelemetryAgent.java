@@ -241,4 +241,12 @@ public class TelemetryAgent implements Runnable {
     public void setDiscoveryClient(DiscoveryClient discoveryClient) {
         this.connectionManager.setDiscoveryClient(discoveryClient);
     }
+
+    public String getSelectedServerId() {
+        return this.connectionManager.getSelectedServerId();
+    }
+
+    public void setSelectedServerId(String selectedServerId) {
+        this.connectionManager.setSelectedServerId(selectedServerId);
+    }
 }

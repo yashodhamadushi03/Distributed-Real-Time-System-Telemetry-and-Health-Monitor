@@ -48,6 +48,7 @@ public class ConnectionManager {
 
     private volatile String currentHost;
     private volatile int currentPort;
+    private volatile String selectedServerId;
     private volatile Socket activeSocket;
     private volatile OutputStream activeOutputStream;
     private volatile InputStream activeInputStream;
@@ -170,18 +171,62 @@ public class ConnectionManager {
 
     /**
      * Runs UDP discovery to find the server coordinates.
+     * If a serverId was previously selected, strictly locates that specific server.
      */
     private boolean performDiscovery() {
         if (discoveryClient == null) {
             return false;
         }
-        Optional<DiscoveredServer> serverOpt = discoveryClient.discover();
-        if (serverOpt.isPresent()) {
-            DiscoveredServer server = serverOpt.get();
-            this.currentHost = server.resolveConnectHost();
-            this.currentPort = server.tcpPort();
+
+        List<DiscoveredServer> responses = discoveryClient.discoverAll();
+        if (responses == null || responses.isEmpty()) {
+            return false;
+        }
+
+        // If a server was previously selected, strictly search for it (Requirement 4 #6, #7, #9, #10)
+        if (selectedServerId != null && !selectedServerId.isBlank()) {
+            DiscoveredServer matched = null;
+            for (DiscoveredServer candidate : responses) {
+                if (selectedServerId.equals(candidate.serverId())) {
+                    matched = candidate;
+                    break;
+                }
+            }
+
+            if (matched != null) {
+                String newHost = matched.resolveConnectHost();
+                int newPort = matched.tcpPort();
+                if (!newHost.equals(currentHost) || newPort != currentPort) {
+                    System.out.println(String.format("[RECONNECT] Server '%s' updated coordinates: %s:%d -> %s:%d",
+                            selectedServerId, currentHost, currentPort, newHost, newPort));
+                    LOGGER.info(String.format("[%s] Server '%s' updated coordinates to %s:%d",
+                            nodeId, selectedServerId, newHost, newPort));
+                    this.currentHost = newHost;
+                    this.currentPort = newPort;
+                }
+                return true;
+            } else {
+                // Previously selected server is not in the responses; do NOT connect to a different server
+                System.out.println(String.format("[RECONNECT] Discovered %d server(s), but target server '%s' not present. Continuing discovery retries...",
+                        responses.size(), selectedServerId));
+                LOGGER.info(String.format("[%s] Target server '%s' not present in %d discovered responses. Retrying...",
+                        nodeId, selectedServerId, responses.size()));
+                return false;
+            }
+        }
+
+        // Initial discovery before a server is selected (Scenarios A & B)
+        DiscoveredServer chosen = DiscoveryClient.selectServer(
+                responses,
+                discoveryClient.getPreferredServerId(),
+                discoveryClient.getServerSelector()
+        );
+        if (chosen != null) {
+            this.selectedServerId = chosen.serverId();
+            this.currentHost = chosen.resolveConnectHost();
+            this.currentPort = chosen.tcpPort();
             LOGGER.info(String.format("[%s] Discovered server '%s' targeting %s:%d",
-                    nodeId, server.serverId(), currentHost, currentPort));
+                    nodeId, selectedServerId, currentHost, currentPort));
             return true;
         }
         return false;
@@ -340,20 +385,27 @@ public class ConnectionManager {
                 return;
             }
 
-            // Run UDP discovery if server coordinates are unknown or if direct reconnects failed repeatedly
+            // Run UDP discovery if in discovery mode
             int attempt = retryCounter.get();
             boolean shouldDiscover = discoveryClient != null && (
                     currentHost == null || currentPort <= 0 ||
-                    attempt >= maxDirectRetriesBeforeRediscover
+                    attempt >= maxDirectRetriesBeforeRediscover ||
+                    selectedServerId != null
             );
 
             if (shouldDiscover) {
                 if (currentHost == null || currentPort <= 0) {
                     System.out.println("[RECONNECT] No server coordinates configured; running UDP discovery...");
                 } else {
-                    System.out.println("[RECONNECT] Direct reconnection attempts exhausted; re-running UDP discovery...");
+                    System.out.println(String.format("[RECONNECT] Re-running UDP discovery for server '%s'...",
+                            selectedServerId != null ? selectedServerId : currentHost + ":" + currentPort));
                 }
-                performDiscovery();
+                boolean discovered = performDiscovery();
+                if (!discovered && selectedServerId != null) {
+                    // Target server was not found among discovered responses; do not connect to a different server
+                    scheduleReconnect();
+                    return;
+                }
             }
 
             if (currentHost == null || currentPort <= 0) {
@@ -364,9 +416,11 @@ public class ConnectionManager {
 
             boolean connected = attemptDirectConnect();
             if (connected) {
-                System.out.println(String.format("[RECONNECT] Connection successfully restored to %s:%d! [Node ID: %s]",
-                        currentHost, currentPort, nodeId));
-                LOGGER.info(String.format("[%s] Connection successfully restored to %s:%d", nodeId, currentHost, currentPort));
+                System.out.println(String.format("[RECONNECT] Connection successfully restored to %s:%d! [Node ID: %s%s]",
+                        currentHost, currentPort, nodeId,
+                        selectedServerId != null ? (", Server: " + selectedServerId) : ""));
+                LOGGER.info(String.format("[%s] Connection successfully restored to %s:%d (Server: %s)",
+                        nodeId, currentHost, currentPort, selectedServerId));
             } else {
                 scheduleReconnect();
             }
@@ -483,6 +537,14 @@ public class ConnectionManager {
 
     public BackoffCalculator getBackoffCalculator() {
         return backoffCalculator;
+    }
+
+    public String getSelectedServerId() {
+        return selectedServerId;
+    }
+
+    public void setSelectedServerId(String selectedServerId) {
+        this.selectedServerId = selectedServerId;
     }
 
     public DiscoveryClient getDiscoveryClient() {

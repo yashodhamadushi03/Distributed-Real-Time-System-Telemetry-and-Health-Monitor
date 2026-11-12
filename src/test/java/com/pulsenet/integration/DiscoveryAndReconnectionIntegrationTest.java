@@ -255,7 +255,7 @@ class DiscoveryAndReconnectionIntegrationTest {
         servers.add(server2);
         server2.start();
 
-        DiscoveryServer udpServer2 = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort2, "server-v2");
+        DiscoveryServer udpServer2 = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort2, "server-v1");
         discoveryServers.add(udpServer2);
         udpServer2.start();
 
@@ -299,6 +299,219 @@ class DiscoveryAndReconnectionIntegrationTest {
         // Verify agent discovers server on subsequent retry and connects
         assertTrue(awaitCondition(4000, () -> agent.getConnectionState() == ConnectionState.CONNECTED));
         assertTrue(awaitCondition(3000, () -> registry.getNode("early-bird").isPresent()));
+    }
+
+    @Test
+    @DisplayName("Test 11: Preferred server selection when multiple servers respond")
+    void testPreferredServerSelectionWhenMultipleServersRespond() throws Exception {
+        int udpPort1 = findFreeUdpPort();
+        int udpPort2 = findFreeUdpPort();
+        while (udpPort2 == udpPort1) udpPort2 = findFreeUdpPort();
+
+        int tcpPort1 = findFreeTcpPort();
+        int candidatePort2 = findFreeTcpPort();
+        while (candidatePort2 == tcpPort1) candidatePort2 = findFreeTcpPort();
+        final int tcpPort2 = candidatePort2;
+
+        NodeRegistry registry1 = new NodeRegistry();
+        TelemetryServer server1 = new TelemetryServer("127.0.0.1", tcpPort1, registry1);
+        servers.add(server1);
+        server1.start();
+        DiscoveryServer udp1 = new DiscoveryServer("127.0.0.1", udpPort1, "127.0.0.1", tcpPort1, "server-one");
+        discoveryServers.add(udp1);
+        udp1.start();
+
+        NodeRegistry registry2 = new NodeRegistry();
+        TelemetryServer server2 = new TelemetryServer("127.0.0.1", tcpPort2, registry2);
+        servers.add(server2);
+        server2.start();
+        DiscoveryServer udp2 = new DiscoveryServer("127.0.0.1", udpPort2, "127.0.0.1", tcpPort2, "server-two");
+        discoveryServers.add(udp2);
+        udp2.start();
+
+        // Agent probes both UDP ports, configured with preferredServerId = "server-two"
+        DiscoveryClient dc = new DiscoveryClient("pref-agent", List.of(udpPort1, udpPort2), 1000, 2, 200L, "server-two", null);
+        TelemetryAgent agent = new TelemetryAgent(dc, "pref-agent", 50);
+        agents.add(agent);
+        agent.start();
+
+        // Must connect to server-two (tcpPort2), not server-one
+        assertTrue(awaitCondition(5000, () -> registry2.getNode("pref-agent").isPresent()));
+        assertFalse(registry1.getNode("pref-agent").isPresent(), "Must not connect to non-preferred server");
+        assertEquals("server-two", agent.getSelectedServerId());
+        assertEquals(tcpPort2, agent.getServerPort());
+    }
+
+    @Test
+    @DisplayName("Test 12: Manual server selection via ServerSelector when multiple servers respond")
+    void testManualServerSelectionWhenMultipleServersRespond() throws Exception {
+        int udpPort1 = findFreeUdpPort();
+        int udpPort2 = findFreeUdpPort();
+        while (udpPort2 == udpPort1) udpPort2 = findFreeUdpPort();
+
+        int tcpPort1 = findFreeTcpPort();
+        int candidatePort2 = findFreeTcpPort();
+        while (candidatePort2 == tcpPort1) candidatePort2 = findFreeTcpPort();
+        final int tcpPort2 = candidatePort2;
+
+        NodeRegistry registry1 = new NodeRegistry();
+        TelemetryServer server1 = new TelemetryServer("127.0.0.1", tcpPort1, registry1);
+        servers.add(server1);
+        server1.start();
+        DiscoveryServer udp1 = new DiscoveryServer("127.0.0.1", udpPort1, "127.0.0.1", tcpPort1, "srv-alpha");
+        discoveryServers.add(udp1);
+        udp1.start();
+
+        NodeRegistry registry2 = new NodeRegistry();
+        TelemetryServer server2 = new TelemetryServer("127.0.0.1", tcpPort2, registry2);
+        servers.add(server2);
+        server2.start();
+        DiscoveryServer udp2 = new DiscoveryServer("127.0.0.1", udpPort2, "127.0.0.1", tcpPort2, "srv-beta");
+        discoveryServers.add(udp2);
+        udp2.start();
+
+        // Agent uses selector that chooses "srv-beta"
+        DiscoveryClient dc = new DiscoveryClient("selector-agent", List.of(udpPort1, udpPort2), 1000, 2, 200L, null, candidates -> {
+            for (DiscoveredServer s : candidates) {
+                if ("srv-beta".equals(s.serverId())) return s;
+            }
+            return candidates.get(0);
+        });
+
+        TelemetryAgent agent = new TelemetryAgent(dc, "selector-agent", 50);
+        agents.add(agent);
+        agent.start();
+
+        // Must connect to srv-beta (registry2), not srv-alpha
+        assertTrue(awaitCondition(5000, () -> registry2.getNode("selector-agent").isPresent()));
+        assertFalse(registry1.getNode("selector-agent").isPresent(), "Must not connect to unselected server");
+        assertEquals("srv-beta", agent.getSelectedServerId());
+        assertEquals(tcpPort2, agent.getServerPort());
+    }
+
+    @Test
+    @DisplayName("Test 13: Reconnection sticks to previously selected serverId and never silently connects to different server")
+    void testReconnectionSticksToPreviouslySelectedServerWhenAnotherServerIsAvailable() throws Exception {
+        int udpPort1 = findFreeUdpPort();
+        int udpPort2 = findFreeUdpPort();
+        while (udpPort2 == udpPort1) udpPort2 = findFreeUdpPort();
+
+        int tcpPort1 = findFreeTcpPort();
+        int candidatePort2 = findFreeTcpPort();
+        while (candidatePort2 == tcpPort1) candidatePort2 = findFreeTcpPort();
+        final int tcpPort2 = candidatePort2;
+
+        // Start Server 1 (primary target)
+        NodeRegistry registry1 = new NodeRegistry();
+        TelemetryServer server1 = new TelemetryServer("127.0.0.1", tcpPort1, registry1);
+        servers.add(server1);
+        server1.start();
+        DiscoveryServer udp1 = new DiscoveryServer("127.0.0.1", udpPort1, "127.0.0.1", tcpPort1, "primary-target");
+        discoveryServers.add(udp1);
+        udp1.start();
+
+        // Start Server 2 (secondary/bystander server that remains running)
+        NodeRegistry registry2 = new NodeRegistry();
+        TelemetryServer server2 = new TelemetryServer("127.0.0.1", tcpPort2, registry2);
+        servers.add(server2);
+        server2.start();
+        DiscoveryServer udp2 = new DiscoveryServer("127.0.0.1", udpPort2, "127.0.0.1", tcpPort2, "bystander-srv");
+        discoveryServers.add(udp2);
+        udp2.start();
+
+        // Agent targets primary-target initially
+        DiscoveryClient dc = new DiscoveryClient("loyal-node", List.of(udpPort1, udpPort2), 1000, 2, 200L, "primary-target", null);
+        TelemetryAgent agent = new TelemetryAgent(dc, "loyal-node", 50);
+        agent.setInitialBackoffMillis(100);
+        agent.setMaxBackoffMillis(500);
+        agents.add(agent);
+        agent.start();
+
+        // Initially connected to server 1
+        assertTrue(awaitCondition(4000, () -> registry1.getNode("loyal-node").isPresent()));
+        assertEquals("primary-target", agent.getSelectedServerId());
+
+        // Now STOP Server 1 abruptly (Wi-Fi disconnect from Server 1 / crash)
+        udp1.stop();
+        discoveryServers.remove(udp1);
+        server1.stop();
+        servers.remove(server1);
+
+        // Verify agent enters reconnecting state
+        assertTrue(awaitCondition(3000, () -> agent.getConnectionState() == ConnectionState.RECONNECTING
+                || agent.getConnectionState() == ConnectionState.CONNECTION_LOST));
+
+        // Bystander server 2 is STILL RUNNING and broadcasting.
+        // Wait 2 seconds and verify that the agent DOES NOT connect to server 2!
+        Thread.sleep(2000);
+        assertFalse(registry2.getNode("loyal-node").isPresent(),
+                "Agent must NOT silently connect to bystander-srv when primary-target is down");
+        assertTrue(agent.getConnectionState() == ConnectionState.RECONNECTING,
+                "Agent must continue retrying discovery for primary-target");
+
+        // Now bring Server 1 back online!
+        TelemetryServer server1Recovered = new TelemetryServer("127.0.0.1", tcpPort1, registry1);
+        servers.add(server1Recovered);
+        server1Recovered.start();
+        DiscoveryServer udp1Recovered = new DiscoveryServer("127.0.0.1", udpPort1, "127.0.0.1", tcpPort1, "primary-target");
+        discoveryServers.add(udp1Recovered);
+        udp1Recovered.start();
+
+        // Agent must now automatically reconnect to primary-target!
+        assertTrue(awaitCondition(5000, () -> agent.getConnectionState() == ConnectionState.CONNECTED
+                && registry1.getNode("loyal-node").isPresent()),
+                "Agent must automatically reconnect to primary-target once it is back online");
+        assertFalse(registry2.getNode("loyal-node").isPresent(), "Must still not have connected to bystander");
+    }
+
+    @Test
+    @DisplayName("Test 14: Wi-Fi disconnection followed by reconnection recovery with telemetry resumption")
+    void testWifiDisconnectionAndReconnectionRecovery() throws Exception {
+        int udpPort = findFreeUdpPort();
+        int tcpPort = findFreeTcpPort();
+        NodeRegistry registry = new NodeRegistry();
+
+        TelemetryServer server = new TelemetryServer("127.0.0.1", tcpPort, registry);
+        servers.add(server);
+        server.start();
+
+        DiscoveryServer udpServer = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort, "wifi-host");
+        discoveryServers.add(udpServer);
+        udpServer.start();
+
+        DiscoveryClient dc = new DiscoveryClient("wifi-node", udpPort, 1000, 2, 200L, null);
+        TelemetryAgent agent = new TelemetryAgent(dc, "wifi-node", 50);
+        agent.setInitialBackoffMillis(100);
+        agent.setMaxBackoffMillis(500);
+        agents.add(agent);
+        agent.start();
+
+        assertTrue(awaitCondition(4000, () -> registry.getNode("wifi-node").isPresent()));
+        long initialMessages = agent.getMessagesSent();
+        assertTrue(initialMessages > 0, "Initial telemetry messages must be sent");
+
+        // Simulate Wi-Fi drop: disconnect socket and stop listeners
+        udpServer.stop();
+        discoveryServers.remove(udpServer);
+        server.stop();
+        servers.remove(server);
+
+        assertTrue(awaitCondition(3000, () -> agent.getConnectionState() == ConnectionState.RECONNECTING
+                || agent.getConnectionState() == ConnectionState.CONNECTION_LOST));
+
+        // Simulate Wi-Fi restored after 1 second: restart server
+        TelemetryServer restoredServer = new TelemetryServer("127.0.0.1", tcpPort, registry);
+        servers.add(restoredServer);
+        restoredServer.start();
+
+        DiscoveryServer restoredUdp = new DiscoveryServer("127.0.0.1", udpPort, "127.0.0.1", tcpPort, "wifi-host");
+        discoveryServers.add(restoredUdp);
+        restoredUdp.start();
+
+        // Agent must automatically reconnect and resume telemetry
+        assertTrue(awaitCondition(5000, () -> agent.getConnectionState() == ConnectionState.CONNECTED));
+        assertTrue(awaitCondition(3000, () -> agent.getMessagesSent() > initialMessages),
+                "Telemetry messages must continue incrementing after reconnection");
     }
 
     private boolean awaitCondition(long timeoutMillis, java.util.function.BooleanSupplier condition)

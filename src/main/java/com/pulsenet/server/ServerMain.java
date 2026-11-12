@@ -36,7 +36,7 @@ public class ServerMain {
         String host = "0.0.0.0";
         int port = 9000;
         int udpPort = DiscoveryServer.DEFAULT_UDP_PORT;
-        String serverId = DiscoveryServer.DEFAULT_SERVER_ID;
+        String serverId = null;
         boolean enableDiscovery = true;
         int timeoutSeconds = -1; // -1 means run indefinitely
         boolean headless = false;
@@ -81,6 +81,10 @@ public class ServerMain {
                 default:
                     LOGGER.warning("Unknown argument: " + args[i]);
             }
+        }
+
+        if (serverId == null || serverId.isBlank()) {
+            serverId = generateDefaultServerId(port);
         }
 
         // In ANSI mode the dashboard clears the screen at 2 Hz; route log records to a file so
@@ -262,6 +266,36 @@ public class ServerMain {
                     + "); non-fatal log records will be discarded.");
             return null;
         }
+    }
+
+    /**
+     * Generates a stable default server identifier using the normalized host name and listener port,
+     * ensuring unique identification across distinct server hosts.
+     *
+     * @param port listening TCP port
+     * @return unique default server ID
+     */
+    public static String generateDefaultServerId(int port) {
+        String host = null;
+        try {
+            host = java.net.InetAddress.getLocalHost().getHostName();
+        } catch (Exception ignored) {
+        }
+        if (host == null || host.isBlank()) {
+            host = System.getenv("COMPUTERNAME");
+        }
+        if (host == null || host.isBlank()) {
+            host = System.getenv("HOSTNAME");
+        }
+        if (host == null || host.isBlank()) {
+            return DiscoveryServer.DEFAULT_SERVER_ID;
+        }
+        String normalized = host.trim().toLowerCase(java.util.Locale.ROOT);
+        int dot = normalized.indexOf('.');
+        if (dot > 0) {
+            normalized = normalized.substring(0, dot);
+        }
+        return "pulsenet-server-" + normalized + (port != 9000 ? ("-" + port) : "");
     }
 
     private static void printUsage() {
