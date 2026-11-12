@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 
-         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.pulsenet</groupId>
@@ -15,14 +16,19 @@
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
         <maven.compiler.source>25</maven.compiler.source>
         <maven.compiler.target>25</maven.compiler.target>
         <maven.compiler.release>25</maven.compiler.release>
+
         <jackson.version>2.17.0</jackson.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
+        <javafx.version>25</javafx.version>
+        <oshi.version>6.6.5</oshi.version>
     </properties>
 
     <dependencies>
+
         <!-- JSON Serialization -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -30,37 +36,51 @@
             <version>${jackson.version}</version>
         </dependency>
 
-        <!-- Unit & Integration Testing -->
+        <!-- JavaFX Desktop UI -->
+        <dependency>
+            <groupId>org.openjfx</groupId>
+            <artifactId>javafx-controls</artifactId>
+            <version>${javafx.version}</version>
+        </dependency>
+
+        <!-- Hardware and Operating System Monitoring -->
+        <dependency>
+            <groupId>com.github.oshi</groupId>
+            <artifactId>oshi-core</artifactId>
+            <version>${oshi.version}</version>
+        </dependency>
+
+        <!-- JUnit Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>
             <artifactId>junit-jupiter</artifactId>
             <version>${junit.jupiter.version}</version>
             <scope>test</scope>
         </dependency>
+
     </dependencies>
 
     <build>
         <plugins>
-            <!-- Compiler Plugin -->
+
+            <!-- Java Compiler -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
                 <version>3.13.0</version>
                 <configuration>
-                    <source>25</source>
-                    <target>25</target>
                     <release>25</release>
                 </configuration>
             </plugin>
 
-            <!-- Surefire Test Runner Plugin -->
+            <!-- JUnit -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.2.5</version>
             </plugin>
 
-            <!-- Dependency Plugin to package runtime jars for direct java -cp execution -->
+            <!-- Copy Runtime Dependencies -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -73,19 +93,31 @@
                             <goal>copy-dependencies</goal>
                         </goals>
                         <configuration>
-                            <outputDirectory>${project.build.directory}/lib</outputDirectory>
+                            <outputDirectory>
+                                ${project.build.directory}/lib
+                            </outputDirectory>
                             <includeScope>runtime</includeScope>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- Shade Plugin: self-contained executable JAR (target/pulsenet.jar) for multi-laptop demo.
-                 Written to a separate file so the thin jar + target/lib/* used by run_demo.* still exists. -->
+            <!-- JavaFX Plugin -->
+            <plugin>
+                <groupId>org.openjfx</groupId>
+                <artifactId>javafx-maven-plugin</artifactId>
+                <version>0.0.8</version>
+                <configuration>
+                    <mainClass>com.pulsenet.ui.PulseNetApp</mainClass>
+                </configuration>
+            </plugin>
+
+            <!-- Executable JAR -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.3</version>
+
                 <executions>
                     <execution>
                         <id>executable-jar</id>
@@ -93,15 +125,24 @@
                         <goals>
                             <goal>shade</goal>
                         </goals>
+
                         <configuration>
-                            <outputFile>${project.build.directory}/pulsenet.jar</outputFile>
-                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <outputFile>
+                                ${project.build.directory}/pulsenet.jar
+                            </outputFile>
+
+                            <createDependencyReducedPom>
+                                false
+                            </createDependencyReducedPom>
+
                             <artifactSet>
                                 <excludes>
-                                    <!-- Leaked into runtime scope by jackson-databind 2.17.0; not used at runtime. -->
-                                    <exclude>net.bytebuddy:byte-buddy</exclude>
+                                    <exclude>
+                                        net.bytebuddy:byte-buddy
+                                    </exclude>
                                 </excludes>
                             </artifactSet>
+
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -115,26 +156,32 @@
                                     </excludes>
                                 </filter>
                             </filters>
+
                             <transformers>
+
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.pulsenet.Launcher</mainClass>
                                     <manifestEntries>
                                         <Multi-Release>true</Multi-Release>
                                     </manifestEntries>
                                 </transformer>
+
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+
                             </transformers>
                         </configuration>
                     </execution>
                 </executions>
             </plugin>
 
-            <!-- Exec Plugin for running CLI applications -->
+            <!-- Exec Plugin -->
             <plugin>
                 <groupId>org.codehaus.mojo</groupId>
                 <artifactId>exec-maven-plugin</artifactId>
                 <version>3.2.0</version>
             </plugin>
+
         </plugins>
     </build>
+
 </project>
