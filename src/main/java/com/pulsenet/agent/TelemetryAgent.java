@@ -116,9 +116,37 @@ public class TelemetryAgent implements Runnable {
 
     private void registerStateListener() {
         this.connectionManager.addListener((oldState, newState) -> {
-            if (newState == ConnectionState.CONNECTED) {
+            if (newState == ConnectionState.RECONNECTING || newState == ConnectionState.DISCONNECTED) {
+                if (internetMonitor != null) {
+                    internetMonitor.triggerImmediateCheck();
+                }
+            } else if (newState == ConnectionState.CONNECTED) {
+                String targetHost = connectionManager.getCurrentHost();
+                Socket activeSocket = connectionManager.getActiveSocket();
+                if (activeSocket != null && internetMonitor != null) {
+                    internetMonitor.setActiveLocalAddress(activeSocket.getLocalAddress());
+                }
                 if (networkProbeClient != null) {
-                    networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                    networkProbeClient.setTarget(targetHost, probePort);
+                    if (!networkProbeClient.isRunning()) {
+                        try {
+                            networkProbeClient.start();
+                            LOGGER.info(String.format("[%s] NetworkProbeClient active on connect (target %s:%d)", nodeId, targetHost, probePort));
+                        } catch (Exception e) {
+                            LOGGER.warning(String.format("[%s] Failed to start NetworkProbeClient on connect: %s", nodeId, e.getMessage()));
+                        }
+                    }
+                }
+                if (internetMonitor != null) {
+                    if (!internetMonitor.isRunning()) {
+                        try {
+                            internetMonitor.start();
+                            LOGGER.info(String.format("[%s] InternetMonitor active on connect", nodeId));
+                        } catch (Exception e) {
+                            LOGGER.warning(String.format("[%s] Failed to start InternetMonitor on connect: %s", nodeId, e.getMessage()));
+                        }
+                    }
+                    internetMonitor.triggerImmediateCheck();
                 }
                 synchronized (stateSync) {
                     stateSync.notifyAll();
@@ -186,6 +214,24 @@ public class TelemetryAgent implements Runnable {
             try {
                 OutputStream out = connectionManager.getActiveOutputStream();
                 if (out != null) {
+                    Socket activeSocket = connectionManager.getActiveSocket();
+                    if (activeSocket != null && internetMonitor != null) {
+                        internetMonitor.setActiveLocalAddress(activeSocket.getLocalAddress());
+                    }
+                    if (networkProbeClient != null && !networkProbeClient.isRunning()) {
+                        try {
+                            networkProbeClient.setTarget(connectionManager.getCurrentHost(), probePort);
+                            networkProbeClient.start();
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    if (internetMonitor != null && !internetMonitor.isRunning()) {
+                        try {
+                            internetMonitor.start();
+                        } catch (Exception ignored) {
+                        }
+                    }
+
                     TelemetryPayload payload = metricCollector.collect(nodeId);
                     NetworkMetrics netMetrics = new NetworkMetrics();
                     connectionManager.populateConnectionMetrics(netMetrics);
@@ -208,6 +254,9 @@ public class TelemetryAgent implements Runnable {
                 if (running.get()) {
                     LOGGER.warning(String.format("[%s] Telemetry send failed: %s", nodeId, e.getMessage()));
                     connectionManager.notifyConnectionLost(e);
+                    if (internetMonitor != null) {
+                        internetMonitor.triggerImmediateCheck();
+                    }
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();

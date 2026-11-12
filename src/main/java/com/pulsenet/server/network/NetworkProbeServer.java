@@ -93,6 +93,8 @@ public class NetworkProbeServer implements Runnable {
                             txBytes, txBytes.length, rxPacket.getSocketAddress()
                     );
                     socket.send(txPacket);
+                    LOGGER.fine(String.format("Echoed UDP probe seq=%d node=%s to %s",
+                            request.getSequenceNumber(), request.getNodeId(), rxPacket.getSocketAddress()));
                 }
 
             } catch (SocketException e) {

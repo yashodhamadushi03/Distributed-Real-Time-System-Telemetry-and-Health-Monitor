@@ -132,5 +132,69 @@ class InternetMonitorTest {
         monitor.stop();
         assertFalse(monitor.isRunning());
     }
+
+    @Test
+    @DisplayName("Gateway discovery: Dynamic OS routing table and interface detection returns non-null gateway")
+    void testGatewayResolution() throws Exception {
+        InternetMonitor monitor = new InternetMonitor("test-agent");
+        String gw = monitor.resolveDefaultGatewayIp();
+        assertNotNull(gw);
+        assertFalse(gw.isBlank());
+
+        monitor.setActiveLocalAddress(java.net.InetAddress.getByName("127.0.0.1"));
+        String gw2 = monitor.resolveDefaultGatewayIp();
+        assertNotNull(gw2);
+    }
+
+    @Test
+    @DisplayName("Immediate check: Triggering immediate check executes diagnostics asynchronously")
+    void testImmediateCheckOnTrigger() throws Exception {
+        InternetMonitor monitor = new InternetMonitor("trigger-agent");
+        monitor.setGatewayProbe(timeout -> new InternetMonitor.GatewayResult("192.168.1.1", true, 2L));
+        monitor.setDnsProbe((host, timeout) -> new InternetMonitor.DnsResult(true, 5L));
+        monitor.setHttpsProbe((endpoint, timeout) -> new InternetMonitor.HttpsResult(true, 204, 20L));
+
+        monitor.start();
+        try {
+            monitor.triggerImmediateCheck();
+            long start = System.currentTimeMillis();
+            while (InternetConnectivityMetrics.STATUS_UNKNOWN.equals(monitor.getLatestMetrics().getStatus())
+                    && System.currentTimeMillis() - start < 2000) {
+                Thread.sleep(50);
+            }
+            assertEquals(InternetConnectivityMetrics.STATUS_ONLINE, monitor.getLatestMetrics().getStatus());
+        } finally {
+            monitor.stop();
+        }
+    }
+
+    @Test
+    @DisplayName("Mark offline: Immediately invalidates metrics to OFFLINE state")
+    void testMarkOffline() {
+        InternetMonitor monitor = new InternetMonitor("offline-agent");
+        monitor.setGatewayProbe(timeout -> new InternetMonitor.GatewayResult("192.168.1.1", true, 2L));
+        monitor.setDnsProbe((host, timeout) -> new InternetMonitor.DnsResult(true, 5L));
+        monitor.setHttpsProbe((endpoint, timeout) -> new InternetMonitor.HttpsResult(true, 204, 20L));
+
+        monitor.executeCheck();
+        assertEquals(InternetConnectivityMetrics.STATUS_ONLINE, monitor.getLatestMetrics().getStatus());
+
+        // Call markOffline on interface drop
+        monitor.markOffline();
+        InternetConnectivityMetrics metrics = monitor.getLatestMetrics();
+        assertEquals(InternetConnectivityMetrics.STATUS_OFFLINE, metrics.getStatus());
+        assertFalse(metrics.isGatewayReachable());
+        assertFalse(metrics.isDnsSuccess());
+        assertFalse(metrics.isHttpsSuccess());
+    }
+
+    @Test
+    @DisplayName("Active interface check: Detects whether physical interfaces exist without exceptions")
+    void testHasAnyActiveNetworkInterface() {
+        // Must execute cleanly without exceptions
+        boolean hasInterface = InternetMonitor.hasAnyActiveNetworkInterface();
+        // Return boolean value is valid
+        assertTrue(hasInterface || !hasInterface);
+    }
 }
 

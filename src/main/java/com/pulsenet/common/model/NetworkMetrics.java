@@ -28,7 +28,9 @@ public class NetworkMetrics implements Serializable {
     private double avgJitterMs = -1.0;
 
     // Packet loss metrics
-    private double packetLossPercent = 0.0;
+    private double packetLossPercent = 0.0; // Rolling window packet loss percent
+    private int windowSize = 50; // Rolling window sample size
+    private double cumulativeLossPercent = 0.0; // Lifetime cumulative packet loss percent
     private long probesSent = 0L;
     private long probesReceived = 0L;
     private long probesLost = 0L;
@@ -64,6 +66,8 @@ public class NetworkMetrics implements Serializable {
         this.currentJitterMs = other.currentJitterMs;
         this.avgJitterMs = other.avgJitterMs;
         this.packetLossPercent = other.packetLossPercent;
+        this.windowSize = other.windowSize;
+        this.cumulativeLossPercent = other.cumulativeLossPercent;
         this.probesSent = other.probesSent;
         this.probesReceived = other.probesReceived;
         this.probesLost = other.probesLost;
@@ -138,6 +142,22 @@ public class NetworkMetrics implements Serializable {
 
     public void setPacketLossPercent(double packetLossPercent) {
         this.packetLossPercent = packetLossPercent;
+    }
+
+    public int getWindowSize() {
+        return windowSize;
+    }
+
+    public void setWindowSize(int windowSize) {
+        this.windowSize = windowSize;
+    }
+
+    public double getCumulativeLossPercent() {
+        return cumulativeLossPercent;
+    }
+
+    public void setCumulativeLossPercent(double cumulativeLossPercent) {
+        this.cumulativeLossPercent = cumulativeLossPercent;
     }
 
     public long getProbesSent() {
@@ -295,6 +315,8 @@ public class NetworkMetrics implements Serializable {
                 Double.compare(that.currentJitterMs, currentJitterMs) == 0 &&
                 Double.compare(that.avgJitterMs, avgJitterMs) == 0 &&
                 Double.compare(that.packetLossPercent, packetLossPercent) == 0 &&
+                Double.compare(that.cumulativeLossPercent, cumulativeLossPercent) == 0 &&
+                windowSize == that.windowSize &&
                 probesSent == that.probesSent &&
                 probesReceived == that.probesReceived &&
                 probesLost == that.probesLost &&
@@ -318,8 +340,8 @@ public class NetworkMetrics implements Serializable {
     @Override
     public int hashCode() {
         return Objects.hash(currentRttMs, avgRttMs, minRttMs, maxRttMs, currentJitterMs, avgJitterMs,
-                packetLossPercent, probesSent, probesReceived, probesLost, connectionStatus,
-                connectionUptimeMillis, lastConnectTimestamp, lastDisconnectTimestamp,
+                packetLossPercent, windowSize, cumulativeLossPercent, probesSent, probesReceived, probesLost,
+                connectionStatus, connectionUptimeMillis, lastConnectTimestamp, lastDisconnectTimestamp,
                 lastDisconnectReason, reconnectionCount, lastReconnectTimestamp, connectedServerId,
                 serverHost, serverPort, udpProbePort, agentIp, agentSourcePort, agentHostname, protocol);
     }
@@ -331,6 +353,8 @@ public class NetworkMetrics implements Serializable {
                 ", avgRttMs=" + avgRttMs +
                 ", avgJitterMs=" + avgJitterMs +
                 ", packetLossPercent=" + packetLossPercent +
+                ", windowSize=" + windowSize +
+                ", cumulativeLossPercent=" + cumulativeLossPercent +
                 ", probesSent=" + probesSent +
                 ", probesReceived=" + probesReceived +
                 ", probesLost=" + probesLost +

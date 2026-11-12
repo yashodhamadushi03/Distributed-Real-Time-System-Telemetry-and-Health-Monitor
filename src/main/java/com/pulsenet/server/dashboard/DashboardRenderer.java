@@ -247,11 +247,16 @@ public class DashboardRenderer implements Runnable {
 
                 // Network Quality
                 sb.append(" Network Quality:\n");
-                double loss = net != null ? net.getPacketLossPercent() : 0.0;
+                double rollingLoss = net != null ? net.getPacketLossPercent() : 0.0;
+                double cumLoss = net != null ? net.getCumulativeLossPercent() : 0.0;
+                int wSize = net != null ? net.getWindowSize() : 50;
                 double jitter = net != null ? net.getAvgJitterMs() : -1.0;
+                String lossDisplay = (net != null && net.getProbesSent() > 0)
+                        ? String.format(Locale.US, "%.1f%% (Win %d)", rollingLoss, wSize)
+                        : "N/A";
                 sb.append(String.format(Locale.US,
-                        "   Packet Loss: %-12s Average Jitter: %-12s Quality: %s\n",
-                        (net != null && net.getProbesSent() > 0) ? String.format(Locale.US, "%.1f%%", loss) : "N/A",
+                        "   Packet Loss: %-14s Average Jitter: %-12s Quality: %s\n",
+                        lossDisplay,
                         formatMs(jitter),
                         qualityBadge(net)));
 
@@ -270,14 +275,33 @@ public class DashboardRenderer implements Runnable {
                 long sent = net != null ? net.getProbesSent() : 0L;
                 long recvd = net != null ? net.getProbesReceived() : 0L;
                 long lost = net != null ? net.getProbesLost() : 0L;
+                String cumLossNote = (sent > 0) ? String.format(Locale.US, "(Cum Loss: %.1f%%)", cumLoss) : "(Cum Loss: 0.0%)";
                 sb.append(String.format(Locale.US,
-                        "   Packets Sent: %-10d Responses Received: %-10d Lost Packets: %-6d\n",
-                        sent, recvd, lost));
+                        "   Packets Sent: %-8d Responses Received: %-8d Lost Packets: %-5d %s\n",
+                        sent, recvd, lost, cumLossNote));
 
                 // Internet Connectivity
+                boolean isNodeOffline = "OFFLINE".equalsIgnoreCase(record.getStatus()) || silenceSec > 5;
                 InternetConnectivityMetrics inet = payload != null ? payload.getInternetMetrics() : null;
                 sb.append(" Internet Connectivity:\n");
-                if (inet == null || InternetConnectivityMetrics.STATUS_UNKNOWN.equals(inet.getStatus())) {
+                if (isNodeOffline) {
+                    String gw = (inet != null && inet.getGatewayIp() != null) ? inet.getGatewayIp() : "unknown";
+                    sb.append(String.format(Locale.US,
+                            "   Status: %-12s Gateway: %-15s Reachability: %s\n",
+                            colorizeInternetStatus("OFFLINE (Node Disconnected)"),
+                            gw,
+                            "UNREACHABLE (Node Offline)"));
+                    sb.append(String.format(Locale.US,
+                            "   DNS Resolution: %-26s External HTTPS: %s\n",
+                            "STALE (Node Disconnected)",
+                            "STALE (Node Disconnected)"));
+                    long lastCheckSec = (inet != null && inet.getLastCheckTimestamp() > 0) ? Math.max(0, (now - inet.getLastCheckTimestamp()) / 1000) : -1L;
+                    long lastSuccSec = (inet != null && inet.getLastSuccessfulCheckTimestamp() > 0) ? Math.max(0, (now - inet.getLastSuccessfulCheckTimestamp()) / 1000) : -1L;
+                    sb.append(String.format(Locale.US,
+                            "   Last Check: %-20s Last Successful Online: %s\n",
+                            lastCheckSec >= 0 ? (lastCheckSec + "s ago (Stale)") : "N/A",
+                            lastSuccSec >= 0 ? (lastSuccSec + "s ago") : "Never"));
+                } else if (inet == null || InternetConnectivityMetrics.STATUS_UNKNOWN.equals(inet.getStatus())) {
                     sb.append(String.format(Locale.US,
                             "   Status: %s | Gateway: %s | DNS: %s | External HTTPS: %s\n",
                             colorizeInternetStatus(inet != null ? inet.getStatus() : InternetConnectivityMetrics.STATUS_UNKNOWN),
@@ -425,11 +449,12 @@ public class DashboardRenderer implements Runnable {
 
     private String colorizeInternetStatus(String status) {
         if (!ansiEnabled || status == null) return status != null ? status : "UNKNOWN";
-        if (InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(status)) {
+        String upper = status.toUpperCase(Locale.ROOT);
+        if (upper.startsWith("ONLINE")) {
             return ANSI_BOLD + ANSI_GREEN + status + ANSI_RESET;
-        } else if (InternetConnectivityMetrics.STATUS_LIMITED.equalsIgnoreCase(status)) {
+        } else if (upper.contains("LIMITED") || upper.contains("STALE")) {
             return ANSI_BOLD + ANSI_YELLOW + status + ANSI_RESET;
-        } else if (InternetConnectivityMetrics.STATUS_OFFLINE.equalsIgnoreCase(status)) {
+        } else if (upper.contains("OFFLINE")) {
             return ANSI_BOLD + ANSI_RED + status + ANSI_RESET;
         } else {
             return ANSI_GRAY + status + ANSI_RESET;

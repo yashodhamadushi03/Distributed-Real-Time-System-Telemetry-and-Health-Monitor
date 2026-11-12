@@ -6,8 +6,7 @@ import com.pulsenet.common.net.NetworkUtils;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.net.*;
-import java.util.List;
-import java.util.Locale;
+import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
@@ -20,7 +19,8 @@ import java.util.logging.Logger;
  *
  * <p>Diagnostic stages:
  * <ol>
- *   <li><b>Gateway Reachability:</b> Resolves active LAN default gateway and verifies L2/L3 reachability.</li>
+ *   <li><b>Gateway Reachability:</b> Discovers the active default network gateway using OS route tables,
+ *       interface binding, and reachability probes without assuming a hardcoded address.</li>
  *   <li><b>DNS Resolution:</b> Verifies DNS lookup speed against a test hostname (e.g. {@code dns.google}).</li>
  *   <li><b>External HTTPS Verification:</b> Executes a lightweight HTTPS HEAD/GET probe against a known endpoint
  *       (e.g. {@code https://www.google.com/generate_204}) to confirm actual global Internet transit.</li>
@@ -48,6 +48,7 @@ public class InternetMonitor implements Runnable {
     private final int checkTimeoutMillis;
     private volatile String dnsTestHost;
     private volatile String httpsTestEndpoint;
+    private volatile InetAddress activeLocalAddress;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final ReentrantLock metricsLock = new ReentrantLock();
@@ -76,6 +77,8 @@ public class InternetMonitor implements Runnable {
     public record DnsResult(boolean success, long durationMs) {}
     public record HttpsResult(boolean success, int statusCode, long durationMs) {}
 
+    private record RouteEntry(String destination, String netmask, String gateway, String iface, int metric) {}
+
     public InternetMonitor(String nodeId) {
         this(nodeId, DEFAULT_CHECK_INTERVAL_SECONDS, DEFAULT_CHECK_TIMEOUT_MILLIS,
                 DEFAULT_DNS_TEST_HOST, DEFAULT_HTTPS_ENDPOINT);
@@ -91,6 +94,16 @@ public class InternetMonitor implements Runnable {
 
         currentMetrics.setDnsTestHost(this.dnsTestHost);
         currentMetrics.setHttpsTestEndpoint(this.httpsTestEndpoint);
+    }
+
+    /**
+     * Updates the active local network address used by the TCP connection to the PulseNet server.
+     * This allows exact network interface and subnet gateway resolution.
+     */
+    public void setActiveLocalAddress(InetAddress address) {
+        if (address != null && !address.isLoopbackAddress() && !address.isAnyLocalAddress()) {
+            this.activeLocalAddress = address;
+        }
     }
 
     /**
@@ -111,6 +124,40 @@ public class InternetMonitor implements Runnable {
         }
     }
 
+    /**
+     * Triggers an immediate asynchronous execution of the Internet connectivity check,
+     * without waiting for the scheduled interval timer.
+     */
+    public void triggerImmediateCheck() {
+        if (running.get() && scheduler != null && !scheduler.isShutdown()) {
+            scheduler.execute(() -> {
+                try {
+                    executeCheck();
+                } catch (Throwable t) {
+                    LOGGER.log(Level.FINE, "[" + nodeId + "] Error during immediate Internet check: " + t.getMessage());
+                }
+            });
+        }
+    }
+
+    /**
+     * Immediately transitions the current metrics to OFFLINE and resets reachable status.
+     * Called when the agent detects network interface loss or connection failure.
+     */
+    public void markOffline() {
+        metricsLock.lock();
+        try {
+            currentMetrics.setStatus(InternetConnectivityMetrics.STATUS_OFFLINE);
+            currentMetrics.setGatewayReachable(false);
+            currentMetrics.setDnsSuccess(false);
+            currentMetrics.setHttpsSuccess(false);
+            currentMetrics.setHttpStatusCode(-1);
+            currentMetrics.setLastCheckTimestamp(System.currentTimeMillis());
+        } finally {
+            metricsLock.unlock();
+        }
+    }
+
     @Override
     public void run() {
         if (!running.get()) {
@@ -119,8 +166,8 @@ public class InternetMonitor implements Runnable {
 
         try {
             executeCheck();
-        } catch (Exception e) {
-            LOGGER.log(Level.FINE, "[" + nodeId + "] Error during Internet check: " + e.getMessage());
+        } catch (Throwable t) {
+            LOGGER.log(Level.WARNING, "[" + nodeId + "] Unexpected error during Internet check: " + t.getMessage(), t);
         }
     }
 
@@ -159,6 +206,10 @@ public class InternetMonitor implements Runnable {
         } finally {
             metricsLock.unlock();
         }
+
+        LOGGER.fine(String.format("[%s] Internet check: Status=%s, Gateway=%s (%s), DNS=%b (%dms), HTTPS=%b (code=%d, %dms)",
+                nodeId, status, gw.gatewayIp(), gw.reachable() ? "OK" : "FAIL",
+                dns.success(), dns.durationMs(), https.success(), https.statusCode(), https.durationMs()));
     }
 
     /**
@@ -177,12 +228,43 @@ public class InternetMonitor implements Runnable {
     }
 
     /**
+     * Determines whether any non-loopback, non-point-to-point network interface is currently UP
+     * and assigned a valid IPv4 address.
+     *
+     * @return true if an active IPv4 interface is present; false if all physical interfaces are down.
+     */
+    public static boolean hasAnyActiveNetworkInterface() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            if (interfaces == null) return false;
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp() || iface.isPointToPoint()) {
+                    continue;
+                }
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress() && !addr.isLinkLocalAddress()) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    /**
      * Default Gateway reachability check.
      */
     private GatewayResult defaultGatewayProbe(int timeoutMs) {
         long start = System.currentTimeMillis();
+        if (!hasAnyActiveNetworkInterface()) {
+            return new GatewayResult("none", false, 0L);
+        }
         String gatewayIp = resolveDefaultGatewayIp();
-        if (gatewayIp == null || gatewayIp.isBlank()) {
+        if (gatewayIp == null || gatewayIp.isBlank() || "unknown".equalsIgnoreCase(gatewayIp)) {
             return new GatewayResult("unknown", false, -1L);
         }
 
@@ -196,6 +278,9 @@ public class InternetMonitor implements Runnable {
      */
     private DnsResult defaultDnsProbe(String host, int timeoutMs) {
         long start = System.currentTimeMillis();
+        if (!hasAnyActiveNetworkInterface()) {
+            return new DnsResult(false, -1L);
+        }
         try {
             InetAddress[] addrs = InetAddress.getAllByName(host);
             long elapsed = System.currentTimeMillis() - start;
@@ -211,6 +296,9 @@ public class InternetMonitor implements Runnable {
      */
     private HttpsResult defaultHttpsProbe(String endpoint, int timeoutMs) {
         long start = System.currentTimeMillis();
+        if (!hasAnyActiveNetworkInterface()) {
+            return new HttpsResult(false, -1, -1L);
+        }
         HttpURLConnection conn = null;
         try {
             URL url = new URI(endpoint).toURL();
@@ -254,7 +342,7 @@ public class InternetMonitor implements Runnable {
                     return true;
                 } catch (SocketTimeoutException ignored) {
                 } catch (ConnectException e) {
-                    // "Connection refused" indicates the IP is active on the network and actively refused the port
+                    // "Connection refused" indicates the host is active on the network and actively refused the port
                     return true;
                 } catch (Exception ignored) {
                 }
@@ -265,72 +353,232 @@ public class InternetMonitor implements Runnable {
     }
 
     /**
-     * Resolves the primary active default gateway IP using OS route tables or subnet conventions.
+     * Resolves the real default gateway IP using OS routing tables, active socket interface mapping,
+     * and reachability verification without hardcoding a .1 address.
      */
     public String resolveDefaultGatewayIp() {
-        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
-        String gateway = null;
+        String targetInterfaceIp = (activeLocalAddress != null) ? activeLocalAddress.getHostAddress() : null;
 
-        if (os.contains("win")) {
-            gateway = parseWindowsGateway();
-        } else {
-            gateway = parseUnixGateway();
-        }
-
-        if (gateway == null || gateway.isBlank() || "0.0.0.0".equals(gateway)) {
-            // Fallback: Infer standard .1 gateway from primary LAN IPv4
+        // If not explicitly set from TCP socket, find primary candidate LAN IP
+        if (targetInterfaceIp == null) {
             List<NetworkUtils.LanAddress> lans = NetworkUtils.listLanIPv4Addresses();
             if (!lans.isEmpty()) {
-                String lanIp = lans.get(0).address();
-                int lastDot = lanIp.lastIndexOf('.');
-                if (lastDot > 0) {
-                    gateway = lanIp.substring(0, lastDot) + ".1";
+                targetInterfaceIp = lans.get(0).address();
+            }
+        }
+
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        String gateway = null;
+        String discoveryMethod = "none";
+
+        if (os.contains("win")) {
+            gateway = discoverWindowsGateway(targetInterfaceIp);
+            if (gateway != null) {
+                discoveryMethod = "Windows Route Table";
+            } else {
+                gateway = discoverWindowsNetshGateway(targetInterfaceIp);
+                if (gateway != null) {
+                    discoveryMethod = "Windows Netsh Config";
+                }
+            }
+        } else if (os.contains("mac") || os.contains("darwin")) {
+            gateway = discoverMacGateway();
+            if (gateway != null) {
+                discoveryMethod = "macOS Route";
+            }
+        } else {
+            gateway = discoverLinuxGateway(targetInterfaceIp);
+            if (gateway != null) {
+                discoveryMethod = "Linux IP Route";
+            }
+        }
+
+        // Subnet verification fallback only if OS routing commands failed to yield a gateway
+        if (gateway == null && targetInterfaceIp != null) {
+            int lastDot = targetInterfaceIp.lastIndexOf('.');
+            if (lastDot > 0) {
+                String candidate = targetInterfaceIp.substring(0, lastDot) + ".1";
+                if (checkIpReachable(candidate, 800)) {
+                    gateway = candidate;
+                    discoveryMethod = "Subnet Probed Responsive Router (.1)";
                 }
             }
         }
 
-        return gateway != null ? gateway : "unknown";
+        String finalGateway = (gateway != null && !gateway.isBlank() && !"0.0.0.0".equals(gateway)) ? gateway : "unknown";
+        LOGGER.info(String.format("[%s] Gateway Discovery: InterfaceIP=%s, Gateway=%s, Method=%s",
+                nodeId, targetInterfaceIp != null ? targetInterfaceIp : "unknown", finalGateway, discoveryMethod));
+
+        return finalGateway;
     }
 
-    private String parseWindowsGateway() {
+    private String discoverWindowsGateway(String targetInterfaceIp) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("route", "print", "0.0.0.0").start();
+            process = new ProcessBuilder("route", "print", "0.0.0.0").start();
+            List<RouteEntry> routes = new ArrayList<>();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     line = line.trim();
                     if (line.startsWith("0.0.0.0")) {
                         String[] parts = line.split("\\s+");
-                        // Format: Network Destination | Netmask | Gateway | Interface | Metric
-                        if (parts.length >= 3 && !"0.0.0.0".equals(parts[2]) && parts[2].matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
-                            return parts[2];
+                        if (parts.length >= 5 && "0.0.0.0".equals(parts[0]) && "0.0.0.0".equals(parts[1])) {
+                            String gw = parts[2];
+                            String iface = parts[3];
+                            int metric = 99999;
+                            try {
+                                metric = Integer.parseInt(parts[4]);
+                            } catch (NumberFormatException ignored) {
+                            }
+                            if (isValidIpv4(gw) && !"0.0.0.0".equals(gw)) {
+                                routes.add(new RouteEntry(parts[0], parts[1], gw, iface, metric));
+                            }
                         }
                     }
                 }
             }
-        } catch (Exception ignored) {
+            process.waitFor(1500, TimeUnit.MILLISECONDS);
+
+            // 1. Match route whose interface matches targetInterfaceIp
+            if (targetInterfaceIp != null) {
+                for (RouteEntry r : routes) {
+                    if (targetInterfaceIp.equals(r.iface())) {
+                        return r.gateway();
+                    }
+                }
+            }
+
+            // 2. Select lowest metric default route
+            routes.sort(Comparator.comparingInt(RouteEntry::metric));
+            if (!routes.isEmpty()) {
+                return routes.get(0).gateway();
+            }
+        } catch (Exception e) {
+            LOGGER.fine(String.format("[%s] Failed to parse Windows route table: %s", nodeId, e.getMessage()));
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
         }
         return null;
     }
 
-    private String parseUnixGateway() {
+    private String discoverWindowsNetshGateway(String targetInterfaceIp) {
+        Process process = null;
         try {
-            Process process = new ProcessBuilder("ip", "route", "show", "default").start();
+            process = new ProcessBuilder("netsh", "interface", "ipv4", "show", "config").start();
             try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line = reader.readLine();
-                if (line != null) {
-                    // Format: default via 192.168.1.1 dev ...
+                String line;
+                boolean inTargetInterface = (targetInterfaceIp == null);
+                String lastDetectedGateway = null;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith("Configuration for interface")) {
+                        inTargetInterface = (targetInterfaceIp == null);
+                    }
+                    if (targetInterfaceIp != null && trimmed.contains(targetInterfaceIp)) {
+                        inTargetInterface = true;
+                    }
+                    if (inTargetInterface && trimmed.startsWith("Default Gateway:")) {
+                        String[] parts = trimmed.split(":", 2);
+                        if (parts.length > 1) {
+                            String gw = parts[1].trim();
+                            if (isValidIpv4(gw) && !"0.0.0.0".equals(gw)) {
+                                return gw;
+                            }
+                        }
+                    } else if (trimmed.startsWith("Default Gateway:")) {
+                        String[] parts = trimmed.split(":", 2);
+                        if (parts.length > 1) {
+                            String gw = parts[1].trim();
+                            if (isValidIpv4(gw) && !"0.0.0.0".equals(gw)) {
+                                lastDetectedGateway = gw;
+                            }
+                        }
+                    }
+                }
+                if (lastDetectedGateway != null) {
+                    return lastDetectedGateway;
+                }
+            }
+            process.waitFor(1500, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            LOGGER.fine(String.format("[%s] Failed to parse netsh config: %s", nodeId, e.getMessage()));
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return null;
+    }
+
+    private String discoverLinuxGateway(String targetInterfaceIp) {
+        Process process = null;
+        try {
+            process = new ProcessBuilder("ip", "route", "show", "default").start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
                     String[] parts = line.trim().split("\\s+");
                     for (int i = 0; i < parts.length - 1; i++) {
-                        if ("via".equalsIgnoreCase(parts[i]) && parts[i + 1].matches("\\d+\\.\\d+\\.\\d+\\.\\d+")) {
+                        if ("via".equalsIgnoreCase(parts[i]) && isValidIpv4(parts[i + 1])) {
                             return parts[i + 1];
                         }
                     }
                 }
             }
-        } catch (Exception ignored) {
+            process.waitFor(1500, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            LOGGER.fine(String.format("[%s] Failed to parse Linux ip route: %s", nodeId, e.getMessage()));
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
         }
         return null;
+    }
+
+    private String discoverMacGateway() {
+        Process process = null;
+        try {
+            process = new ProcessBuilder("route", "-n", "get", "default").start();
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (trimmed.startsWith("gateway:")) {
+                        String[] parts = trimmed.split(":", 2);
+                        if (parts.length > 1 && isValidIpv4(parts[1].trim())) {
+                            return parts[1].trim();
+                        }
+                    }
+                }
+            }
+            process.waitFor(1500, TimeUnit.MILLISECONDS);
+        } catch (Exception e) {
+            LOGGER.fine(String.format("[%s] Failed to parse macOS route: %s", nodeId, e.getMessage()));
+        } finally {
+            if (process != null) {
+                process.destroyForcibly();
+            }
+        }
+        return null;
+    }
+
+    private static boolean isValidIpv4(String ip) {
+        if (ip == null || ip.isBlank()) return false;
+        String[] parts = ip.trim().split("\\.");
+        if (parts.length != 4) return false;
+        try {
+            for (String p : parts) {
+                int n = Integer.parseInt(p);
+                if (n < 0 || n > 255) return false;
+            }
+            return true;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     /**

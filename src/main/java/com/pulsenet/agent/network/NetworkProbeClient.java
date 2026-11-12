@@ -47,15 +47,15 @@ public class NetworkProbeClient implements Runnable {
     private final AtomicLong sequenceCounter = new AtomicLong(0);
 
     // Cumulative counters
-    private final AtomicLong totalProbesSent = new AtomicLong(0);
-    private final AtomicLong totalProbesReceived = new AtomicLong(0);
-    private final AtomicLong totalProbesLost = new AtomicLong(0);
+    final AtomicLong totalProbesSent = new AtomicLong(0);
+    final AtomicLong totalProbesReceived = new AtomicLong(0);
+    final AtomicLong totalProbesLost = new AtomicLong(0);
 
     // In-flight probe records: sequence -> sendTimestamp
-    private final ConcurrentMap<Long, Long> inFlightProbes = new ConcurrentHashMap<>();
+    final ConcurrentMap<Long, Long> inFlightProbes = new ConcurrentHashMap<>();
 
     // Sliding window of recent probe outcomes: true = received, false = lost
-    private final Deque<Boolean> outcomeWindow = new ArrayDeque<>();
+    final Deque<Boolean> outcomeWindow = new ArrayDeque<>();
     private final ReentrantLock statsLock = new ReentrantLock();
 
     // Latency statistics
@@ -219,7 +219,11 @@ public class NetworkProbeClient implements Runnable {
     /**
      * Processes a valid probe response, updating RTT, Jitter, and Packet Loss statistics.
      */
-    private void handleProbeResponse(NetworkProbePacket response, long rxTime) {
+    void handleProbeResponse(NetworkProbePacket response, long rxTime) {
+        if (response.getNodeId() != null && !response.getNodeId().isBlank() && !this.nodeId.equals(response.getNodeId())) {
+            return; // Reject probe response belonging to another node
+        }
+
         long seq = response.getSequenceNumber();
         Long sendTime = inFlightProbes.remove(seq);
 
@@ -268,7 +272,7 @@ public class NetworkProbeClient implements Runnable {
     /**
      * Records a probe outcome (true = received, false = lost) into the sliding window.
      */
-    private void recordWindowOutcome(boolean received) {
+    void recordWindowOutcome(boolean received) {
         statsLock.lock();
         try {
             outcomeWindow.addLast(received);
@@ -322,10 +326,16 @@ public class NetworkProbeClient implements Runnable {
             metrics.setCurrentJitterMs(roundToOneDecimal(currentJitterMs));
             metrics.setAvgJitterMs(roundToOneDecimal(avgJitterMs));
 
+            metrics.setWindowSize(windowSize);
             metrics.setPacketLossPercent(roundToOneDecimal(getWindowPacketLossPercent()));
-            metrics.setProbesSent(totalProbesSent.get());
-            metrics.setProbesReceived(totalProbesReceived.get());
-            metrics.setProbesLost(totalProbesLost.get());
+            long sent = totalProbesSent.get();
+            long recvd = totalProbesReceived.get();
+            long lost = totalProbesLost.get();
+            double cumLoss = (sent > 0) ? ((double) lost / (double) sent) * 100.0 : 0.0;
+            metrics.setCumulativeLossPercent(roundToOneDecimal(cumLoss));
+            metrics.setProbesSent(sent);
+            metrics.setProbesReceived(recvd);
+            metrics.setProbesLost(lost);
 
             metrics.setServerHost(targetHost);
             metrics.setUdpProbePort(targetProbePort);
@@ -404,6 +414,16 @@ public class NetworkProbeClient implements Runnable {
 
     public long getTotalProbesLost() {
         return totalProbesLost.get();
+    }
+
+    public double getCumulativePacketLossPercent() {
+        long sent = totalProbesSent.get();
+        long lost = totalProbesLost.get();
+        return (sent > 0) ? ((double) lost / (double) sent) * 100.0 : 0.0;
+    }
+
+    public int getWindowSize() {
+        return windowSize;
     }
 }
 
