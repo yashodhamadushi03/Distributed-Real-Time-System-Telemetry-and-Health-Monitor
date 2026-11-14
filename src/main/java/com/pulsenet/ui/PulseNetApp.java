@@ -70,19 +70,19 @@ public class PulseNetApp extends Application {
     public static final double DEFAULT_WATCHDOG_TIMEOUT = 5.0;
     private static final int HISTORY_POINTS = 40;
 
-    // Dark-mode NOC color palette
-    private static final String BG_COLOR = "#030B18";
-    private static final String SIDEBAR_COLOR = "#061426";
-    private static final String PANEL_BG = "#07172A";
-    private static final String PANEL_ALT = "#0A1D33";
-    private static final String BORDER_COLOR = "#18324B";
-    private static final String CYAN_ACCENT = "#00C8F5";
-    private static final String BLUE_ACCENT = "#087FF5";
-    private static final String GREEN_ACCENT = "#00D69A";
-    private static final String YELLOW_ACCENT = "#FFC247";
-    private static final String RED_ACCENT = "#FF4D5A";
-    private static final String WHITE_TEXT = "#EAF4FF";
-    private static final String MUTED_TEXT = "#8197B1";
+    // Dark-mode NOC color palette - high-contrast & high clarity
+    private static final String BG_COLOR = "#0A0E17";
+    private static final String SIDEBAR_COLOR = "#101622";
+    private static final String PANEL_BG = "#131C2D";
+    private static final String PANEL_ALT = "#19243A";
+    private static final String BORDER_COLOR = "#22334C";
+    private static final String CYAN_ACCENT = "#00E5FF";
+    private static final String BLUE_ACCENT = "#2979FF";
+    private static final String GREEN_ACCENT = "#00E676";
+    private static final String YELLOW_ACCENT = "#FFD600";
+    private static final String RED_ACCENT = "#FF1744";
+    private static final String WHITE_TEXT = "#FFFFFF";
+    private static final String MUTED_TEXT = "#90A4AE";
 
     private int tcpPort = DEFAULT_TCP_PORT;
     private int udpDiscoveryPort = DEFAULT_UDP_DISCOVERY_PORT;
@@ -203,6 +203,7 @@ public class PulseNetApp extends Application {
         stage.setHeight(860);
         stage.setMinWidth(1100);
         stage.setMinHeight(700);
+        stage.setMaximized(true);
         stage.setScene(scene);
         stage.centerOnScreen();
         stage.setOnCloseRequest(e -> shutdown());
@@ -296,7 +297,7 @@ public class PulseNetApp extends Application {
     private HBox createHeader() {
         VBox titles = new VBox(4);
         pageSubtitle = new Label();
-        pageSubtitle.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:9px;-fx-font-weight:bold;");
+        pageSubtitle.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:11px;-fx-font-weight:bold;");
         pageTitle = new Label();
         pageTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:26px;-fx-font-weight:bold;");
         titles.getChildren().addAll(pageSubtitle, pageTitle);
@@ -304,15 +305,30 @@ public class PulseNetApp extends Application {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
+        // Clear Server Status & Port Banner
+        HBox serverChip = new HBox(8);
+        serverChip.setAlignment(Pos.CENTER);
+        serverChip.setPadding(new Insets(8, 16, 8, 16));
+        serverChip.setStyle("-fx-background-color:#072B28;-fx-border-color:" + GREEN_ACCENT + ";-fx-border-radius:18;-fx-background-radius:18;-fx-border-width:1.5;");
+        Label dot = new Label("●");
+        dot.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:13px;");
+        Label srvText = new Label("SERVER RUNNING  (TCP :" + tcpPort + " | PROBE UDP :" + udpProbePort + ")");
+        srvText.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+        serverChip.getChildren().addAll(dot, srvText);
+
+        Button viewOverviewBtn = new Button("▣  OVERVIEW");
+        viewOverviewBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
+        viewOverviewBtn.setOnAction(e -> showOverview());
+
         Button viewFleetBtn = new Button("⌁  NETWORK FLEET");
-        viewFleetBtn.setStyle("-fx-background-color:" + BLUE_ACCENT + ";-fx-text-fill:white;-fx-font-size:10px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:9 16 9 16;-fx-cursor:hand;");
+        viewFleetBtn.setStyle("-fx-background-color:" + BLUE_ACCENT + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
         viewFleetBtn.setOnAction(e -> showNetworkFleet());
 
         liveStatusBadge = new Label("●  LIVE TELEMETRY");
         liveStatusBadge.setPadding(new Insets(8, 14, 8, 14));
-        liveStatusBadge.setStyle("-fx-background-color:#06131F;-fx-text-fill:" + GREEN_ACCENT + ";-fx-border-color:" + BORDER_COLOR + ";-fx-border-radius:18;-fx-background-radius:18;-fx-font-size:9px;-fx-font-weight:bold;");
+        liveStatusBadge.setStyle("-fx-background-color:#131C2D;-fx-text-fill:" + GREEN_ACCENT + ";-fx-border-color:" + BORDER_COLOR + ";-fx-border-radius:18;-fx-background-radius:18;-fx-font-size:10px;-fx-font-weight:bold;");
 
-        HBox h = new HBox(14, titles, spacer, viewFleetBtn, liveStatusBadge);
+        HBox h = new HBox(12, titles, spacer, serverChip, viewOverviewBtn, viewFleetBtn, liveStatusBadge);
         h.setAlignment(Pos.CENTER_LEFT);
         return h;
     }
@@ -646,22 +662,22 @@ public class PulseNetApp extends Application {
             // 3. LATENCY (RTT) SECTION
             VBox latencySection = new VBox(6);
             Label latHeader = createHeadingLabel("LATENCY (ROUND-TRIP TIME):");
-            latHeader.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+            latHeader.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:12px;-fx-font-weight:bold;");
 
             GridPane latGrid = new GridPane();
             latGrid.setHgap(36);
             latGrid.setVgap(6);
 
-            addGridItem(latGrid, 0, 0, "Current RTT", formatMs(net != null ? net.getCurrentRttMs() : -1.0));
-            addGridItem(latGrid, 1, 0, "Average RTT", formatMs(net != null ? net.getAvgRttMs() : -1.0));
-            addGridItem(latGrid, 2, 0, "Minimum RTT", formatMs(net != null ? net.getMinRttMs() : -1.0));
-            addGridItem(latGrid, 3, 0, "Maximum RTT", formatMs(net != null ? net.getMaxRttMs() : -1.0));
+            addGridItem(latGrid, 0, 0, "Current RTT", formatMs(net != null ? net.getCurrentRttMs() : -1.0), CYAN_ACCENT);
+            addGridItem(latGrid, 1, 0, "Average RTT", formatMs(net != null ? net.getAvgRttMs() : -1.0), CYAN_ACCENT);
+            addGridItem(latGrid, 2, 0, "Minimum RTT", formatMs(net != null ? net.getMinRttMs() : -1.0), GREEN_ACCENT);
+            addGridItem(latGrid, 3, 0, "Maximum RTT", formatMs(net != null ? net.getMaxRttMs() : -1.0), YELLOW_ACCENT);
             latencySection.getChildren().addAll(latHeader, latGrid);
 
             // 4. NETWORK QUALITY & RFC 3550 JITTER
             VBox qualitySection = new VBox(6);
             Label qHeader = createHeadingLabel("NETWORK QUALITY & JITTER (RFC 3550):");
-            qHeader.setStyle("-fx-text-fill:" + YELLOW_ACCENT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+            qHeader.setStyle("-fx-text-fill:" + YELLOW_ACCENT + ";-fx-font-size:12px;-fx-font-weight:bold;");
 
             GridPane qGrid = new GridPane();
             qGrid.setHgap(36);
@@ -674,17 +690,19 @@ public class PulseNetApp extends Application {
 
             String rollingLossStr = (net != null && net.getProbesSent() > 0) ? String.format(Locale.US, "%.1f%% (Win %d)", rollingLoss, winSize) : "0.0%";
             String cumLossStr = (net != null && net.getProbesSent() > 0) ? String.format(Locale.US, "%.1f%%", cumLoss) : "0.0%";
+            String lossColor = rollingLoss > 0.0 ? RED_ACCENT : GREEN_ACCENT;
+            String cumLossColor = cumLoss > 0.0 ? RED_ACCENT : GREEN_ACCENT;
 
-            addGridItem(qGrid, 0, 0, "Packet Loss (Rolling)", rollingLossStr);
-            addGridItem(qGrid, 1, 0, "Cumulative Loss", cumLossStr);
-            addGridItem(qGrid, 2, 0, "Average Jitter", formatMs(jitter));
-            addGridItem(qGrid, 3, 0, "Quality Rating", getQualityString(net));
+            addGridItem(qGrid, 0, 0, "Packet Loss (Rolling)", rollingLossStr, lossColor);
+            addGridItem(qGrid, 1, 0, "Cumulative Loss", cumLossStr, cumLossColor);
+            addGridItem(qGrid, 2, 0, "Average Jitter", formatMs(jitter), YELLOW_ACCENT);
+            addGridItem(qGrid, 3, 0, "Quality Rating", getQualityString(net), GREEN_ACCENT);
             qualitySection.getChildren().addAll(qHeader, qGrid);
 
             // 5. CONNECTION LIFECYCLE & PROBE STATISTICS
             VBox probeSection = new VBox(6);
             Label pHeader = createHeadingLabel("CONNECTION & PROBE COUNTERS:");
-            pHeader.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+            pHeader.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:12px;-fx-font-weight:bold;");
 
             GridPane pGrid = new GridPane();
             pGrid.setHgap(36);
@@ -696,21 +714,21 @@ public class PulseNetApp extends Application {
             long recvd = net != null ? net.getProbesReceived() : 0L;
             long lost = net != null ? net.getProbesLost() : 0L;
 
-            addGridItem(pGrid, 0, 0, "Connection Uptime", formatDuration(uptimeMs));
-            addGridItem(pGrid, 1, 0, "Reconnections", String.valueOf(reconns));
-            addGridItem(pGrid, 2, 0, "Last Heartbeat", silenceSec + "s ago");
-            addGridItem(pGrid, 3, 0, "Packets Sent", String.valueOf(sent));
+            addGridItem(pGrid, 0, 0, "Connection Uptime", formatDuration(uptimeMs), GREEN_ACCENT);
+            addGridItem(pGrid, 1, 0, "Reconnections", String.valueOf(reconns), reconns > 0 ? YELLOW_ACCENT : GREEN_ACCENT);
+            addGridItem(pGrid, 2, 0, "Last Heartbeat", silenceSec + "s ago", GREEN_ACCENT);
+            addGridItem(pGrid, 3, 0, "Packets Sent", String.valueOf(sent), WHITE_TEXT);
 
-            addGridItem(pGrid, 0, 1, "Responses Received", String.valueOf(recvd));
-            addGridItem(pGrid, 1, 1, "Lost Packets", String.valueOf(lost));
-            addGridItem(pGrid, 2, 1, "Agent UDP Port", net != null && net.getAgentSourcePort() > 0 ? String.valueOf(net.getAgentSourcePort()) : "dynamic");
-            addGridItem(pGrid, 3, 1, "Probe Target", serverEndpoint);
+            addGridItem(pGrid, 0, 1, "Responses Received", String.valueOf(recvd), GREEN_ACCENT);
+            addGridItem(pGrid, 1, 1, "Lost Packets", String.valueOf(lost), lost > 0 ? RED_ACCENT : GREEN_ACCENT);
+            addGridItem(pGrid, 2, 1, "Agent UDP Port", net != null && net.getAgentSourcePort() > 0 ? String.valueOf(net.getAgentSourcePort()) : "dynamic", MUTED_TEXT);
+            addGridItem(pGrid, 3, 1, "Probe Target", serverEndpoint, CYAN_ACCENT);
             probeSection.getChildren().addAll(pHeader, pGrid);
 
             // 6. AGENT INTERNET CONNECTIVITY
             VBox internetSection = new VBox(6);
             Label inetHeader = createHeadingLabel("AGENT INTERNET CONNECTIVITY:");
-            inetHeader.setStyle("-fx-text-fill:" + BLUE_ACCENT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+            inetHeader.setStyle("-fx-text-fill:" + BLUE_ACCENT + ";-fx-font-size:12px;-fx-font-weight:bold;");
 
             GridPane inetGrid = new GridPane();
             inetGrid.setHgap(36);
@@ -719,11 +737,12 @@ public class PulseNetApp extends Application {
             if (isOffline || silenceSec > 5) {
                 // Invalidate stale data when disconnected
                 String gw = (inet != null && inet.getGatewayIp() != null) ? inet.getGatewayIp() : "unknown";
-                addGridItem(inetGrid, 0, 0, "Internet Status", "OFFLINE (Node Disconnected)");
-                addGridItem(inetGrid, 1, 0, "Default Gateway", gw + " (UNREACHABLE)");
-                addGridItem(inetGrid, 2, 0, "DNS Resolution", "STALE (Node Disconnected)");
-                addGridItem(inetGrid, 3, 0, "External HTTPS", "STALE (Node Disconnected)");
+                addGridItem(inetGrid, 0, 0, "Internet Status", "OFFLINE (Node Disconnected)", RED_ACCENT);
+                addGridItem(inetGrid, 1, 0, "Default Gateway", gw + " (UNREACHABLE)", RED_ACCENT);
+                addGridItem(inetGrid, 2, 0, "DNS Resolution", "STALE (Node Disconnected)", RED_ACCENT);
+                addGridItem(inetGrid, 3, 0, "External HTTPS", "STALE (Node Disconnected)", RED_ACCENT);
             } else if (inet != null && !InternetConnectivityMetrics.STATUS_UNKNOWN.equals(inet.getStatus())) {
+                boolean isOnline = InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(inet.getStatus());
                 String gwStatus = inet.isGatewayReachable() ? "REACHABLE" : "UNREACHABLE";
                 String dnsStatus = inet.isDnsSuccess()
                         ? String.format(Locale.US, "OK (%d ms via %s)", inet.getDnsResolutionTimeMs(), inet.getDnsTestHost())
@@ -732,15 +751,16 @@ public class PulseNetApp extends Application {
                         ? String.format(Locale.US, "HTTP %d (%d ms via %s)", inet.getHttpStatusCode(), inet.getHttpsResponseTimeMs(), inet.getHttpsTestEndpoint())
                         : "FAILED";
 
-                addGridItem(inetGrid, 0, 0, "Internet Status", inet.getStatus());
-                addGridItem(inetGrid, 1, 0, "Default Gateway", inet.getGatewayIp() + " (" + gwStatus + ")");
-                addGridItem(inetGrid, 2, 0, "DNS Resolution", dnsStatus);
-                addGridItem(inetGrid, 3, 0, "External HTTPS", httpStatus);
+                String statusColor = isOnline ? GREEN_ACCENT : YELLOW_ACCENT;
+                addGridItem(inetGrid, 0, 0, "Internet Status", inet.getStatus(), statusColor);
+                addGridItem(inetGrid, 1, 0, "Default Gateway", inet.getGatewayIp() + " (" + gwStatus + ")", inet.isGatewayReachable() ? GREEN_ACCENT : RED_ACCENT);
+                addGridItem(inetGrid, 2, 0, "DNS Resolution", dnsStatus, inet.isDnsSuccess() ? GREEN_ACCENT : RED_ACCENT);
+                addGridItem(inetGrid, 3, 0, "External HTTPS", httpStatus, inet.isHttpsSuccess() ? GREEN_ACCENT : RED_ACCENT);
             } else {
-                addGridItem(inetGrid, 0, 0, "Internet Status", "UNKNOWN / Checking...");
-                addGridItem(inetGrid, 1, 0, "Default Gateway", "unknown");
-                addGridItem(inetGrid, 2, 0, "DNS Resolution", "N/A");
-                addGridItem(inetGrid, 3, 0, "External HTTPS", "N/A");
+                addGridItem(inetGrid, 0, 0, "Internet Status", "UNKNOWN / Checking...", MUTED_TEXT);
+                addGridItem(inetGrid, 1, 0, "Default Gateway", "unknown", MUTED_TEXT);
+                addGridItem(inetGrid, 2, 0, "DNS Resolution", "N/A", MUTED_TEXT);
+                addGridItem(inetGrid, 3, 0, "External HTTPS", "N/A", MUTED_TEXT);
             }
             internetSection.getChildren().addAll(inetHeader, inetGrid);
 
@@ -1070,19 +1090,19 @@ public class PulseNetApp extends Application {
     // ================= HELPER WIDGETS & FORMATTING =================
 
     private Label createKpiCard(HBox parent, String title, String color, String icon) {
-        VBox card = new VBox(6);
-        card.setPadding(new Insets(14, 16, 14, 16));
+        VBox card = new VBox(8);
+        card.setPadding(new Insets(16, 18, 16, 18));
         card.setStyle(getPanelStyle());
         HBox.setHgrow(card, Priority.ALWAYS);
 
         HBox top = new HBox(8);
         Label ic = new Label(icon);
-        ic.setStyle("-fx-text-fill:" + color + ";-fx-font-size:12px;");
+        ic.setStyle("-fx-text-fill:" + color + ";-fx-font-size:14px;-fx-font-weight:bold;");
         Label t = createMutedLabel(title);
         top.getChildren().addAll(ic, t);
 
         Label val = new Label("0");
-        val.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:22px;-fx-font-weight:bold;");
+        val.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:24px;-fx-font-weight:bold;-fx-font-family:'Consolas', monospace;");
 
         card.getChildren().addAll(top, val);
         parent.getChildren().add(card);
@@ -1180,45 +1200,53 @@ public class PulseNetApp extends Application {
     }
 
     private void addGridItem(GridPane grid, int col, int row, String label, String value) {
-        VBox b = new VBox(3);
-        b.getChildren().addAll(createMutedLabel(label), createValueLabel(value));
+        addGridItem(grid, col, row, label, value, WHITE_TEXT);
+    }
+
+    private void addGridItem(GridPane grid, int col, int row, String label, String value, String valueColor) {
+        VBox b = new VBox(4);
+        Label lbl = new Label(label);
+        lbl.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;-fx-font-weight:normal;");
+        Label val = new Label(value);
+        val.setStyle("-fx-text-fill:" + valueColor + ";-fx-font-size:14px;-fx-font-weight:bold;-fx-font-family:'Consolas', monospace;");
+        b.getChildren().addAll(lbl, val);
         grid.add(b, col, row);
     }
 
     private Label createHeadingLabel(String text) {
         Label l = new Label(text);
-        l.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:12px;-fx-font-weight:bold;");
+        l.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
         return l;
     }
 
     private Label createMutedLabel(String text) {
         Label l = new Label(text);
-        l.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:9px;");
+        l.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
         return l;
     }
 
     private Label createValueLabel(String text) {
         Label l = new Label(text);
-        l.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:12px;-fx-font-weight:bold;");
+        l.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:14px;-fx-font-weight:bold;");
         return l;
     }
 
     private Label createStatusBadge(String status) {
         String s = (status != null && !status.isBlank()) ? status.toUpperCase(Locale.ROOT) : "UNKNOWN";
         String color = GREEN_ACCENT;
-        String bg = "#06362F";
+        String bg = "#073023";
 
         if (s.contains("OFFLINE") || s.contains("CRITICAL")) {
             color = RED_ACCENT;
-            bg = "#401F2B";
+            bg = "#3A1116";
         } else if (s.contains("RECONNECT") || s.contains("LIMITED") || s.contains("WARN")) {
             color = YELLOW_ACCENT;
-            bg = "#3C321C";
+            bg = "#382E06";
         }
 
         Label l = new Label("●  " + s);
-        l.setPadding(new Insets(5, 10, 5, 10));
-        l.setStyle("-fx-text-fill:" + color + ";-fx-background-color:" + bg + ";-fx-background-radius:12;-fx-font-size:8px;-fx-font-weight:bold;");
+        l.setPadding(new Insets(6, 12, 6, 12));
+        l.setStyle("-fx-text-fill:" + color + ";-fx-background-color:" + bg + ";-fx-background-radius:14;-fx-border-color:" + color + ";-fx-border-radius:14;-fx-font-size:10px;-fx-font-weight:bold;");
         return l;
     }
 
