@@ -279,12 +279,12 @@ pulsenet/
 
 ---
 
-### A. Run Automated Regression Test Suite (71 Tests)
+### A. Run Automated Regression Test Suite (107 Tests)
 Execute all unit and integration tests:
 ```bash
 mvn clean test
 ```
-*Tests cover UDP discovery serialization, server response validation, deterministic selection, exponential backoff jitter bounds, connection state transitions, duplicate reconnection prevention, full loopback discovery and streaming, and automatic recovery.*
+*Tests cover UDP discovery serialization, server response validation, deterministic selection, exponential backoff jitter bounds, connection state transitions, duplicate reconnection prevention, full loopback discovery and streaming, RFC 3550 jitter calculation, UDP packet loss windows, internet connectivity diagnostics, gateway discovery, and automatic recovery.*
 
 ---
 
@@ -300,7 +300,30 @@ This builds `target/pulsenet.jar` and assembles `dist/pulsenet-demo/` with all l
 
 ---
 
-### C. Running the Central Aggregator Server (Host)
+### C. Running the Graphical Network Operations Center (JavaFX UI)
+
+PulseNet includes a standalone, 100% Java desktop dashboard built with JavaFX that renders live KPI summary cards, RTT & Jitter trend charts, hardware load gauges, and an interactive network topology map:
+
+#### Using Convenience Script:
+```powershell
+.\scripts\start-ui.bat         # Windows Command Prompt
+.\scripts\start-ui.ps1         # Windows PowerShell
+./scripts/start-ui.sh          # Linux / macOS
+```
+
+#### Using the Executable JAR:
+```bash
+java -jar target/pulsenet.jar ui
+```
+
+#### Using Maven:
+```bash
+mvn javafx:run
+```
+
+---
+
+### D. Running the Central Aggregator Server (CLI Dashboard)
 
 #### Using the Portable JAR:
 ```bash
@@ -329,7 +352,7 @@ java -cp "target/pulsenet-1.0.0-SNAPSHOT.jar;target/lib/*" com.pulsenet.server.S
 
 ---
 
-### D. Running an Agent Node
+### E. Running an Agent Node
 
 #### 1. Automatic Discovery Mode (No Host IP Required!):
 ```bash
