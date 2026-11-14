@@ -1,0 +1,42 @@
+/* PulseNet NOC Dark High-Contrast Theme */
+.chart-series-line {
+    -fx-stroke-width: 2.8px;
+}
+.chart-plot-background {
+    -fx-background-color: #0d1524;
+}
+.chart-vertical-grid-lines, .chart-horizontal-grid-lines {
+    -fx-stroke: #1a2a44;
+    -fx-stroke-dash-array: 2 4;
+}
+.axis {
+    -fx-tick-label-fill: #90A4AE;
+    -fx-text-fill: #90A4AE;
+    -fx-font-size: 10px;
+}
+.axis-line {
+    -fx-stroke: #22334C;
+    -fx-stroke-width: 1.2px;
+}
+.chart-legend {
+    -fx-background-color: transparent;
+    -fx-padding: 4px;
+}
+.chart-legend-item {
+    -fx-text-fill: #FFFFFF;
+    -fx-font-size: 11px;
+    -fx-font-weight: bold;
+}
+.default-color0.chart-series-line {
+    -fx-stroke: #00E5FF;
+}
+.default-color1.chart-series-line {
+    -fx-stroke: #FF9100;
+}
+.default-color2.chart-series-line {
+    -fx-stroke: #00E676;
+}
+.default-color3.chart-series-line {
+    -fx-stroke: #C084FC;
+}
+

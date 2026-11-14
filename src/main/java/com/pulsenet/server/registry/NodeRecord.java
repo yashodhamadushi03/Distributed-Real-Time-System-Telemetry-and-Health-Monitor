@@ -39,8 +39,8 @@ public class NodeRecord {
         this.latestPayload = payload;
         this.remoteAddress = remoteAddress;
         this.lastSeenTimestamp = timestamp;
-        if (payload != null && !"OFFLINE".equals(this.status)) {
-            this.status = payload.getStatus();
+        if (payload != null) {
+            this.status = payload.getStatus() != null ? payload.getStatus() : "HEALTHY";
         }
     }
 
