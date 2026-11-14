@@ -124,7 +124,14 @@ public class PulseNetApp extends Application {
     private XYChart.Series<Number, Number> jitterSeries;
     private XYChart.Series<Number, Number> downloadSeries;
     private XYChart.Series<Number, Number> uploadSeries;
-    private int chartTick = 0;
+
+    // Continuous History Buffers for Overview Graphs (persists across navigation)
+    private final List<Double> cpuHistory = new ArrayList<>();
+    private final List<Double> memHistory = new ArrayList<>();
+    private final List<Double> rttHistory = new ArrayList<>();
+    private final List<Double> jitterHistory = new ArrayList<>();
+    private final List<Double> downloadHistory = new ArrayList<>();
+    private final List<Double> uploadHistory = new ArrayList<>();
 
     // Drill-Down Node Charts
     private LineChart<Number, Number> detailCpuChart;
@@ -137,6 +144,14 @@ public class PulseNetApp extends Application {
     private XYChart.Series<Number, Number> detailUploadSeries;
     private XYChart.Series<Number, Number> detailRttSeries;
     private XYChart.Series<Number, Number> detailJitterSeries;
+
+    // Continuous History Buffers for Drill-Down Node Charts
+    private final List<Double> detailCpuHistory = new ArrayList<>();
+    private final List<Double> detailMemHistory = new ArrayList<>();
+    private final List<Double> detailDownloadHistory = new ArrayList<>();
+    private final List<Double> detailUploadHistory = new ArrayList<>();
+    private final List<Double> detailRttHistory = new ArrayList<>();
+    private final List<Double> detailJitterHistory = new ArrayList<>();
 
     @Override
     public void init() {
@@ -448,6 +463,8 @@ public class PulseNetApp extends Application {
         cpuSeries.setName("CPU Load");
         memorySeries = new XYChart.Series<>();
         memorySeries.setName("Memory");
+        initSeriesPoints(cpuSeries, cpuHistory);
+        initSeriesPoints(memorySeries, memHistory);
         hostLoadChart.getData().addAll(cpuSeries, memorySeries);
         hostChartBox.getChildren().addAll(c1Title, hostLoadChart);
 
@@ -470,6 +487,8 @@ public class PulseNetApp extends Application {
         rttSeries.setName("Current RTT (ms)");
         jitterSeries = new XYChart.Series<>();
         jitterSeries.setName("Avg Jitter (ms)");
+        initSeriesPoints(rttSeries, rttHistory);
+        initSeriesPoints(jitterSeries, jitterHistory);
         latencyChart.getData().addAll(rttSeries, jitterSeries);
         latChartBox.getChildren().addAll(c2Title, latencyChart);
 
@@ -493,6 +512,8 @@ public class PulseNetApp extends Application {
         downloadSeries.setName("Download (Incoming)");
         uploadSeries = new XYChart.Series<>();
         uploadSeries.setName("Upload (Outgoing)");
+        initSeriesPoints(downloadSeries, downloadHistory);
+        initSeriesPoints(uploadSeries, uploadHistory);
         throughputChart.getData().addAll(downloadSeries, uploadSeries);
         thrChartBox.getChildren().addAll(c3Title, throughputChart);
 
@@ -645,15 +666,12 @@ public class PulseNetApp extends Application {
         uploadSpeedVal.setText(formatSpeed(uploadTotal));
 
         // Append line chart points
-        chartTick++;
-        appendChartPoint(cpuSeries, avgCpu);
-        appendChartPoint(memorySeries, avgMem);
-        if (rttCount > 0) {
-            appendChartPoint(rttSeries, rttSum / rttCount);
-            appendChartPoint(jitterSeries, jitterSum / rttCount);
-        }
-        appendChartPoint(downloadSeries, downloadTotal / 1024.0);
-        appendChartPoint(uploadSeries, uploadTotal / 1024.0);
+        pushChartValue(cpuSeries, cpuHistory, avgCpu);
+        pushChartValue(memorySeries, memHistory, avgMem);
+        pushChartValue(rttSeries, rttHistory, rttCount > 0 ? (rttSum / rttCount) : 0.0);
+        pushChartValue(jitterSeries, jitterHistory, rttCount > 0 ? (jitterSum / rttCount) : 0.0);
+        pushChartValue(downloadSeries, downloadHistory, downloadTotal / 1024.0);
+        pushChartValue(uploadSeries, uploadHistory, uploadTotal / 1024.0);
 
         // Refresh Inventory & Event feed
         refreshInventorySummary(nodes);
@@ -966,6 +984,7 @@ public class PulseNetApp extends Application {
         detailCpuChart.setLegendVisible(false);
         detailCpuChart.setPrefHeight(200);
         detailCpuSeries = new XYChart.Series<>();
+        initSeriesPoints(detailCpuSeries, detailCpuHistory);
         detailCpuChart.getData().add(detailCpuSeries);
         cpuChartBox.getChildren().addAll(cpuChartTitle, detailCpuChart);
 
@@ -986,6 +1005,7 @@ public class PulseNetApp extends Application {
         detailMemChart.setLegendVisible(false);
         detailMemChart.setPrefHeight(200);
         detailMemSeries = new XYChart.Series<>();
+        initSeriesPoints(detailMemSeries, detailMemHistory);
         detailMemChart.getData().add(detailMemSeries);
         memChartBox.getChildren().addAll(memChartTitle, detailMemChart);
 
@@ -1014,6 +1034,8 @@ public class PulseNetApp extends Application {
         detailDownloadSeries.setName("Download");
         detailUploadSeries = new XYChart.Series<>();
         detailUploadSeries.setName("Upload");
+        initSeriesPoints(detailDownloadSeries, detailDownloadHistory);
+        initSeriesPoints(detailUploadSeries, detailUploadHistory);
         detailThroughputChart.getData().addAll(detailDownloadSeries, detailUploadSeries);
         netChartBox.getChildren().addAll(netChartTitle, detailThroughputChart);
 
@@ -1036,6 +1058,8 @@ public class PulseNetApp extends Application {
         detailRttSeries.setName("RTT Latency");
         detailJitterSeries = new XYChart.Series<>();
         detailJitterSeries.setName("Jitter");
+        initSeriesPoints(detailRttSeries, detailRttHistory);
+        initSeriesPoints(detailJitterSeries, detailJitterHistory);
         detailLatencyChart.getData().addAll(detailRttSeries, detailJitterSeries);
         latChartBox.getChildren().addAll(latChartTitle, detailLatencyChart);
 
@@ -1077,14 +1101,22 @@ public class PulseNetApp extends Application {
         );
 
         if (p != null) {
-            appendChartPoint(detailCpuSeries, p.getCpuPercent());
-            appendChartPoint(detailMemSeries, p.getMemoryPercent());
-            appendChartPoint(detailDownloadSeries, p.getDownloadBytesPerSecond() / 1024.0);
-            appendChartPoint(detailUploadSeries, p.getUploadBytesPerSecond() / 1024.0);
+            pushChartValue(detailCpuSeries, detailCpuHistory, p.getCpuPercent());
+            pushChartValue(detailMemSeries, detailMemHistory, p.getMemoryPercent());
+            pushChartValue(detailDownloadSeries, detailDownloadHistory, p.getDownloadBytesPerSecond() / 1024.0);
+            pushChartValue(detailUploadSeries, detailUploadHistory, p.getUploadBytesPerSecond() / 1024.0);
+        } else {
+            pushChartValue(detailCpuSeries, detailCpuHistory, 0.0);
+            pushChartValue(detailMemSeries, detailMemHistory, 0.0);
+            pushChartValue(detailDownloadSeries, detailDownloadHistory, 0.0);
+            pushChartValue(detailUploadSeries, detailUploadHistory, 0.0);
         }
         if (net != null && net.getAvgRttMs() >= 0) {
-            appendChartPoint(detailRttSeries, net.getCurrentRttMs());
-            appendChartPoint(detailJitterSeries, net.getAvgJitterMs());
+            pushChartValue(detailRttSeries, detailRttHistory, net.getCurrentRttMs());
+            pushChartValue(detailJitterSeries, detailJitterHistory, net.getAvgJitterMs());
+        } else {
+            pushChartValue(detailRttSeries, detailRttHistory, 0.0);
+            pushChartValue(detailJitterSeries, detailJitterHistory, 0.0);
         }
     }
 
@@ -1698,12 +1730,38 @@ public class PulseNetApp extends Application {
         return "-fx-background-color:" + PANEL_BG + ";-fx-background-radius:12;-fx-border-color:" + BORDER_COLOR + ";-fx-border-radius:12;";
     }
 
-    private void appendChartPoint(XYChart.Series<Number, Number> series, double value) {
+    private void initSeriesPoints(XYChart.Series<Number, Number> series, List<Double> history) {
         if (series == null) return;
-        series.getData().add(new XYChart.Data<>(chartTick, value));
-        if (series.getData().size() > MAX_CHART_HISTORY) {
-            series.getData().remove(0);
+        series.getData().clear();
+        for (int i = 0; i < MAX_CHART_HISTORY; i++) {
+            double val = 0.0;
+            if (history != null && !history.isEmpty()) {
+                int offset = history.size() - MAX_CHART_HISTORY + i;
+                if (offset >= 0 && offset < history.size()) {
+                    val = history.get(offset);
+                }
+            }
+            series.getData().add(new XYChart.Data<>(i, val));
         }
+    }
+
+    private void pushChartValue(XYChart.Series<Number, Number> series, List<Double> history, double value) {
+        if (history != null) {
+            history.add(value);
+            if (history.size() > MAX_CHART_HISTORY * 2) {
+                history.remove(0);
+            }
+        }
+        if (series == null) return;
+        javafx.collections.ObservableList<XYChart.Data<Number, Number>> data = series.getData();
+        if (data.size() < MAX_CHART_HISTORY) {
+            initSeriesPoints(series, history);
+            return;
+        }
+        for (int i = 0; i < MAX_CHART_HISTORY - 1; i++) {
+            data.get(i).setYValue(data.get(i + 1).getYValue());
+        }
+        data.get(MAX_CHART_HISTORY - 1).setYValue(value);
     }
 
     private String formatSpeed(double bytesPerSec) {
