@@ -42,19 +42,29 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
- * PulseNet Complete Unified Network Operations Center (NOC) & Real-Time Telemetry Dashboard.
+ * PulseNet Complete Unified Network Operations Center (NOC) & Real-Time
+ * Telemetry Dashboard.
  *
- * <p>Integrates 100% of the features from both branches:
+ * <p>
+ * Integrates 100% of the features from both branches:
  * <ul>
- *   <li><b>Yashodha Branch Features:</b> Multi-protocol backend engine (TCP :9000, UDP :9001 Discovery,
- *       UDP :9002 Echo Probes), advanced network telemetry (Current/Avg/Min/Max RTT, RFC 3550 Jitter,
- *       Dual Rolling/Cumulative Packet Loss, Probe packet counters), fleet-wide WAN Internet diagnostics
- *       (Gateway IP & ICMP reachability, DNS query timing, Google HTTPS transit), and real-time trend graphs.</li>
- *   <li><b>Main Branch Features (Chathumi & Pictures):</b> Full hardware system monitoring (OSHI),
- *       Server Fleet with exact cards matching reference pictures (CPU Cores, RAM bytes, Disk free/used,
- *       Battery % & charging status, Download/Upload bandwidth, OS, Uptime), circular donut ring gauges
- *       (Network Health, CPU Usage, Memory Usage, Disk Capacity), interactive topology map,
- *       capacity planning, SLA compliance reporting, and deep node drill-down.</li>
+ * <li><b>Yashodha Branch Features:</b> Multi-protocol backend engine (TCP
+ * :9000, UDP :9001 Discovery,
+ * UDP :9002 Echo Probes), advanced network telemetry (Current/Avg/Min/Max RTT,
+ * RFC 3550 Jitter,
+ * Dual Rolling/Cumulative Packet Loss, Probe packet counters), fleet-wide WAN
+ * Internet diagnostics
+ * (Gateway IP & ICMP reachability, DNS query timing, Google HTTPS transit), and
+ * real-time trend graphs.</li>
+ * <li><b>Main Branch Features (Chathumi & Pictures):</b> Full hardware system
+ * monitoring (OSHI),
+ * Server Fleet with exact cards matching reference pictures (CPU Cores, RAM
+ * bytes, Disk free/used,
+ * Battery % & charging status, Download/Upload bandwidth, OS, Uptime), circular
+ * donut ring gauges
+ * (Network Health, CPU Usage, Memory Usage, Disk Capacity), interactive
+ * topology map,
+ * capacity planning, SLA compliance reporting, and deep node drill-down.</li>
  * </ul>
  */
 public class PulseNetApp extends Application {
@@ -161,11 +171,20 @@ public class PulseNetApp extends Application {
             for (int i = 0; i < raw.size(); i++) {
                 String arg = raw.get(i);
                 if ("--port".equals(arg) && i + 1 < raw.size()) {
-                    try { tcpPort = Integer.parseInt(raw.get(++i)); } catch (Exception ignored) {}
+                    try {
+                        tcpPort = Integer.parseInt(raw.get(++i));
+                    } catch (Exception ignored) {
+                    }
                 } else if ("--udp-port".equals(arg) && i + 1 < raw.size()) {
-                    try { udpDiscoveryPort = Integer.parseInt(raw.get(++i)); } catch (Exception ignored) {}
+                    try {
+                        udpDiscoveryPort = Integer.parseInt(raw.get(++i));
+                    } catch (Exception ignored) {
+                    }
                 } else if (("--probe-port".equals(arg) || "--udp-probe-port".equals(arg)) && i + 1 < raw.size()) {
-                    try { udpProbePort = Integer.parseInt(raw.get(++i)); } catch (Exception ignored) {}
+                    try {
+                        udpProbePort = Integer.parseInt(raw.get(++i));
+                    } catch (Exception ignored) {
+                    }
                 } else if ("--server-id".equals(arg) && i + 1 < raw.size()) {
                     serverId = raw.get(++i);
                 }
@@ -179,7 +198,8 @@ public class PulseNetApp extends Application {
 
         // 1. Initialize core server listeners
         server = new TelemetryServer(DEFAULT_HOST, tcpPort, registry);
-        discoveryServer = new DiscoveryServer(DEFAULT_HOST, udpDiscoveryPort, DEFAULT_HOST, tcpPort, udpProbePort, serverId);
+        discoveryServer = new DiscoveryServer(DEFAULT_HOST, udpDiscoveryPort, DEFAULT_HOST, tcpPort, udpProbePort,
+                serverId);
         probeServer = new NetworkProbeServer(DEFAULT_HOST, udpProbePort);
         watchdog = new WatchdogSupervisor(registry, DEFAULT_WATCHDOG_TIMEOUT);
 
@@ -217,7 +237,8 @@ public class PulseNetApp extends Application {
         ScrollPane scrollPane = new ScrollPane(mainContainer);
         scrollPane.setFitToWidth(true);
         scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
-        scrollPane.setStyle("-fx-background:" + BG_COLOR + ";-fx-background-color:" + BG_COLOR + ";-fx-border-color:transparent;");
+        scrollPane.setStyle(
+                "-fx-background:" + BG_COLOR + ";-fx-background-color:" + BG_COLOR + ";-fx-border-color:transparent;");
         root.setCenter(scrollPane);
 
         showOverview();
@@ -250,7 +271,8 @@ public class PulseNetApp extends Application {
         box.setPadding(new Insets(26, 16, 22, 16));
         box.setPrefWidth(240);
         box.setMinWidth(240);
-        box.setStyle("-fx-background-color:" + SIDEBAR_COLOR + ";-fx-border-color:transparent " + BORDER_COLOR + " transparent transparent;");
+        box.setStyle("-fx-background-color:" + SIDEBAR_COLOR + ";-fx-border-color:transparent " + BORDER_COLOR
+                + " transparent transparent;");
 
         // Brand logo
         VBox brandBox = new VBox(3);
@@ -272,8 +294,7 @@ public class PulseNetApp extends Application {
                 createNavButton("⚠", "Alerts & Events", this::showAlerts),
                 createNavButton("▥", "Capacity Planning", this::showCapacity),
                 createNavButton("▧", "SLA Reports", this::showReports),
-                createNavButton("⚙", "Settings & Ports", this::showSettings)
-        );
+                createNavButton("⚙", "Settings & Ports", this::showSettings));
 
         Region spacer = new Region();
         VBox.setVgrow(spacer, Priority.ALWAYS);
@@ -297,7 +318,8 @@ public class PulseNetApp extends Application {
             action.run();
         });
         navButtons.add(b);
-        if ("Overview".equals(text)) b.setStyle(getNavButtonStyle(true));
+        if ("Overview".equals(text))
+            b.setStyle(getNavButtonStyle(true));
         return b;
     }
 
@@ -333,7 +355,8 @@ public class PulseNetApp extends Application {
         HBox serverChip = new HBox(8);
         serverChip.setAlignment(Pos.CENTER);
         serverChip.setPadding(new Insets(8, 16, 8, 16));
-        serverChip.setStyle("-fx-background-color:#072B28;-fx-border-color:" + GREEN_ACCENT + ";-fx-border-radius:18;-fx-background-radius:18;-fx-border-width:1.5;");
+        serverChip.setStyle("-fx-background-color:#072B28;-fx-border-color:" + GREEN_ACCENT
+                + ";-fx-border-radius:18;-fx-background-radius:18;-fx-border-width:1.5;");
         Label dot = new Label("●");
         dot.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:13px;");
         Label srvText = new Label("SERVER RUNNING  (TCP :" + tcpPort + " | PROBE UDP :" + udpProbePort + ")");
@@ -341,21 +364,24 @@ public class PulseNetApp extends Application {
         serverChip.getChildren().addAll(dot, srvText);
 
         Button viewOverviewBtn = new Button("◈  OVERVIEW");
-        viewOverviewBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
+        viewOverviewBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR
+                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
         viewOverviewBtn.setOnAction(e -> {
             updateNavSelection("Overview");
             showOverview();
         });
 
         Button viewNodesBtn = new Button("▣  NODES");
-        viewNodesBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
+        viewNodesBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR
+                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
         viewNodesBtn.setOnAction(e -> {
             updateNavSelection("Nodes");
             showServerFleet();
         });
 
         Button viewFleetBtn = new Button("⌁  NETWORK FLEET");
-        viewFleetBtn.setStyle("-fx-background-color:" + BLUE_ACCENT + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
+        viewFleetBtn.setStyle("-fx-background-color:" + BLUE_ACCENT
+                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
         viewFleetBtn.setOnAction(e -> {
             updateNavSelection("Network Fleet");
             showNetworkFleet();
@@ -363,9 +389,11 @@ public class PulseNetApp extends Application {
 
         serverOnlineBadge = new Label("● SERVER ONLINE");
         serverOnlineBadge.setPadding(new Insets(8, 18, 8, 18));
-        serverOnlineBadge.setStyle("-fx-background-color:#064e3b;-fx-text-fill:#34d399;-fx-border-color:#059669;-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;");
+        serverOnlineBadge.setStyle(
+                "-fx-background-color:#064e3b;-fx-text-fill:#34d399;-fx-border-color:#059669;-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;");
 
-        HBox h = new HBox(12, titles, spacer, serverChip, viewOverviewBtn, viewNodesBtn, viewFleetBtn, serverOnlineBadge);
+        HBox h = new HBox(12, titles, spacer, serverChip, viewOverviewBtn, viewNodesBtn, viewFleetBtn,
+                serverOnlineBadge);
         h.setAlignment(Pos.CENTER_LEFT);
         return h;
     }
@@ -379,17 +407,21 @@ public class PulseNetApp extends Application {
 
     private void showOverview() {
         currentPage = "Overview";
-        updateHeading("System Overview", "Real-time distributed infrastructure monitoring & advanced network telemetry");
+        updateHeading("System Overview",
+                "Real-time distributed infrastructure monitoring & advanced network telemetry");
         contentArea.getChildren().clear();
 
-        // 1. Top KPI Row (6 cards: Nodes Online, Nodes Offline, Avg RTT, Avg Jitter, Rolling Loss %, Internet Access)
+        // 1. Top KPI Row (6 cards: Nodes Online, Nodes Offline, Avg RTT, Avg Jitter,
+        // Rolling Loss %, Internet Access)
         HBox kpiRow = new HBox(14);
         upValue = createKpiCard(kpiRow, "NODES ONLINE", GREEN_ACCENT, "✓", "0", "Operational devices");
         downValue = createKpiCard(kpiRow, "NODES OFFLINE", RED_ACCENT, "×", "0", "Disconnected devices");
         avgRttValue = createKpiCard(kpiRow, "AVG RTT LATENCY", CYAN_ACCENT, "⌁", "N/A", "UDP probe round-trip");
-        avgJitterValue = createKpiCard(kpiRow, "AVG JITTER (RFC 3550)", YELLOW_ACCENT, "△", "N/A", "Statistical packet jitter");
+        avgJitterValue = createKpiCard(kpiRow, "AVG JITTER (RFC 3550)", YELLOW_ACCENT, "△", "N/A",
+                "Statistical packet jitter");
         packetLossValue = createKpiCard(kpiRow, "ROLLING LOSS %", GREEN_ACCENT, "◌", "0.0%", "50-probe sliding window");
-        internetStatusValue = createKpiCard(kpiRow, "INTERNET ACCESS", GREEN_ACCENT, "🌐", "OFFLINE", "Gateway & DNS transit");
+        internetStatusValue = createKpiCard(kpiRow, "INTERNET ACCESS", GREEN_ACCENT, "🌐", "OFFLINE",
+                "Gateway & DNS transit");
 
         // 2. Circular Donut Ring Gauges Row + Forecast Box (4 Gauges + Sizing Box)
         Label resourceHeading = createSectionTitle("Resource Utilization & Network Health");
@@ -545,14 +577,14 @@ public class PulseNetApp extends Application {
                 invHeading,
                 invPanel,
                 actHeading,
-                actPanel
-        );
+                actPanel);
 
         refreshOverview();
     }
 
     private void refreshOverview() {
-        if (!"Overview".equals(currentPage) || registry == null) return;
+        if (!"Overview".equals(currentPage) || registry == null)
+            return;
 
         List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
         nodes.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER));
@@ -610,7 +642,8 @@ public class PulseNetApp extends Application {
             }
 
             InternetConnectivityMetrics inet = n.getInternetMetrics();
-            if (inet != null && !isOff && InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(inet.getStatus())) {
+            if (inet != null && !isOff
+                    && InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(inet.getStatus())) {
                 onlineInternet++;
             }
         }
@@ -644,12 +677,15 @@ public class PulseNetApp extends Application {
 
         // Update Forecast box
         if (nodes.isEmpty()) {
-            forecastLabel.setText("No infrastructure agents are registered yet. Start an agent to begin live monitoring.");
+            forecastLabel
+                    .setText("No infrastructure agents are registered yet. Start an agent to begin live monitoring.");
         } else if (down == 0) {
-            forecastLabel.setText(String.format(Locale.US, "All %d node(s) reporting live telemetry. RTT: %s. Loss: %s.",
-                    up, avgRttValue.getText(), packetLossValue.getText()));
+            forecastLabel
+                    .setText(String.format(Locale.US, "All %d node(s) reporting live telemetry. RTT: %s. Loss: %s.",
+                            up, avgRttValue.getText(), packetLossValue.getText()));
         } else {
-            forecastLabel.setText(String.format(Locale.US, "Alert: %d node(s) OFFLINE out of %d registered devices.", down, nodes.size()));
+            forecastLabel.setText(String.format(Locale.US, "Alert: %d node(s) OFFLINE out of %d registered devices.",
+                    down, nodes.size()));
         }
         deviceCountLabel.setText("REGISTERED DEVICES                           " + nodes.size());
 
@@ -687,7 +723,8 @@ public class PulseNetApp extends Application {
     private void refreshInventorySummary(List<NodeRecord> nodes) {
         inventoryBoxList.getChildren().clear();
         if (nodes.isEmpty()) {
-            Label empty = new Label("No registered agents connected. Waiting for telemetry on TCP port " + tcpPort + "...");
+            Label empty = new Label(
+                    "No registered agents connected. Waiting for telemetry on TCP port " + tcpPort + "...");
             empty.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:12px;");
             empty.setPadding(new Insets(10));
             inventoryBoxList.getChildren().add(empty);
@@ -703,12 +740,14 @@ public class PulseNetApp extends Application {
             row.setAlignment(Pos.CENTER_LEFT);
             row.setPadding(new Insets(10, 14, 10, 14));
             row.setStyle("-fx-background-color:" + (isOffline ? "#241318" : PANEL_ALT) +
-                    ";-fx-background-radius:8;-fx-border-color:" + (isOffline ? RED_ACCENT : BORDER_COLOR) + ";-fx-border-radius:8;");
+                    ";-fx-background-radius:8;-fx-border-color:" + (isOffline ? RED_ACCENT : BORDER_COLOR)
+                    + ";-fx-border-radius:8;");
 
             VBox left = new VBox(2);
             Label name = new Label(n.getNodeId());
             name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-            Label addr = new Label((n.getAgentHostname() != null ? n.getAgentHostname() : "agent") + "  •  " + (n.getRemoteAddress() != null ? n.getRemoteAddress() : ""));
+            Label addr = new Label((n.getAgentHostname() != null ? n.getAgentHostname() : "agent") + "  •  "
+                    + (n.getRemoteAddress() != null ? n.getRemoteAddress() : ""));
             addr.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
             left.getChildren().addAll(name, addr);
 
@@ -717,13 +756,19 @@ public class PulseNetApp extends Application {
 
             VBox statsBox = new VBox(2);
             statsBox.setAlignment(Pos.CENTER_RIGHT);
-            String rtt = (net != null && net.getAvgRttMs() >= 0) ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs()) : "N/A";
-            String loss = (net != null && net.getProbesSent() > 0) ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent()) : "0.0%";
+            String rtt = (net != null && net.getAvgRttMs() >= 0)
+                    ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs())
+                    : "N/A";
+            String loss = (net != null && net.getProbesSent() > 0)
+                    ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent())
+                    : "0.0%";
             Label netLbl = new Label("RTT: " + rtt + "  |  Loss: " + loss);
-            netLbl.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:11px;-fx-font-family:'Consolas', monospace;");
+            netLbl.setStyle(
+                    "-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:11px;-fx-font-family:'Consolas', monospace;");
 
             Label hwLbl = new Label(p != null
-                    ? String.format(Locale.US, "CPU %.1f%%  RAM %.1f%%  DISK %.1f%%", p.getCpuPercent(), p.getMemoryPercent(), p.getDiskPercent())
+                    ? String.format(Locale.US, "CPU %.1f%%  RAM %.1f%%  DISK %.1f%%", p.getCpuPercent(),
+                            p.getMemoryPercent(), p.getDiskPercent())
                     : "CPU 0.0%  RAM 0.0%  DISK 0.0%");
             hwLbl.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
             statsBox.getChildren().addAll(netLbl, hwLbl);
@@ -754,17 +799,22 @@ public class PulseNetApp extends Application {
             l.setWrapText(true);
 
             String color = GREEN_ACCENT;
-            if (event.contains("[WARN]")) color = YELLOW_ACCENT;
-            else if (event.contains("[LOST]") || event.contains("[FAIL]")) color = RED_ACCENT;
-            else if (event.contains("[SYS]")) color = CYAN_ACCENT;
-            else if (event.contains("[REC]") || event.contains("[OK]")) color = GREEN_ACCENT;
+            if (event.contains("[WARN]"))
+                color = YELLOW_ACCENT;
+            else if (event.contains("[LOST]") || event.contains("[FAIL]"))
+                color = RED_ACCENT;
+            else if (event.contains("[SYS]"))
+                color = CYAN_ACCENT;
+            else if (event.contains("[REC]") || event.contains("[OK]"))
+                color = GREEN_ACCENT;
 
             l.setStyle("-fx-text-fill:" + color + ";-fx-font-size:11.5px;-fx-font-family:'Consolas', monospace;");
             eventFeedBox.getChildren().add(l);
         }
     }
 
-    // ================= VIEW 2: SERVER FLEET / NODE MANAGEMENT (EXACTLY MATCHING PICTURES) =================
+    // ================= VIEW 2: SERVER FLEET / NODE MANAGEMENT (EXACTLY MATCHING
+    // PICTURES) =================
 
     private void showServerFleet() {
         currentPage = "Nodes";
@@ -774,7 +824,8 @@ public class PulseNetApp extends Application {
     }
 
     private void refreshServerFleet() {
-        if (!"Nodes".equals(currentPage)) return;
+        if (!"Nodes".equals(currentPage))
+            return;
         contentArea.getChildren().clear();
 
         List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
@@ -812,11 +863,13 @@ public class PulseNetApp extends Application {
             Button inspectNetBtn = createSmallButton("VIEW NETWORK PROBES →");
             inspectNetBtn.setOnAction(e -> showNetworkFleet());
 
-            Label statusBadge = createPillBadge(isOffline ? "• OFFLINE" : "• HEALTHY", isOffline ? RED_ACCENT : GREEN_ACCENT);
+            Label statusBadge = createPillBadge(isOffline ? "• OFFLINE" : "• HEALTHY",
+                    isOffline ? RED_ACCENT : GREEN_ACCENT);
             head.getChildren().addAll(nodeName, spacer, inspectBtn, inspectNetBtn, statusBadge);
 
             // Remote Address line
-            Label addrLine = new Label("Address: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "/127.0.0.1:0"));
+            Label addrLine = new Label(
+                    "Address: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "/127.0.0.1:0"));
             addrLine.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:13px;");
 
             card.getChildren().addAll(head, addrLine);
@@ -843,7 +896,8 @@ public class PulseNetApp extends Application {
                         : "Unavailable");
 
                 String batteryLine = "Battery: " + (p.isBatteryAvailable()
-                        ? String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(), p.isBatteryCharging() ? "Charging" : "Not charging")
+                        ? String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(),
+                                p.isBatteryCharging() ? "Charging" : "Not charging")
                         : "100.0% (Not charging)");
 
                 String downLine = "Download: " + formatSpeed(p.getDownloadBytesPerSecond());
@@ -870,8 +924,7 @@ public class PulseNetApp extends Application {
                         createDetailLabel(osLine),
                         createDetailLabel(hostLine),
                         createDetailLabel(ipLine),
-                        createDetailLabel(uptimeLine)
-                );
+                        createDetailLabel(uptimeLine));
 
                 card.getChildren().add(detailsList);
             } else {
@@ -890,7 +943,8 @@ public class PulseNetApp extends Application {
         return l;
     }
 
-    // ================= VIEW 3: NODE DETAILS DRILL-DOWN (EXACTLY MATCHING PICTURES) =================
+    // ================= VIEW 3: NODE DETAILS DRILL-DOWN (EXACTLY MATCHING PICTURES)
+    // =================
 
     private void showNodeDetails(String nodeId) {
         selectedNodeId = nodeId;
@@ -901,7 +955,8 @@ public class PulseNetApp extends Application {
     }
 
     private void refreshNodeDetails() {
-        if (!"Node Details".equals(currentPage)) return;
+        if (!"Node Details".equals(currentPage))
+            return;
         contentArea.getChildren().clear();
 
         Button backBtn = createSmallButton("← BACK TO ALL NODES");
@@ -918,7 +973,8 @@ public class PulseNetApp extends Application {
                 .orElse(null);
 
         if (node == null) {
-            contentArea.getChildren().add(createEmptyStateWidget("Device '" + selectedNodeId + "' was not found in registry."));
+            contentArea.getChildren()
+                    .add(createEmptyStateWidget("Device '" + selectedNodeId + "' was not found in registry."));
             return;
         }
 
@@ -947,8 +1003,8 @@ public class PulseNetApp extends Application {
                 createDetailLabel("CPU Temperature: " + tempStr),
                 createDetailLabel("CPU Logical Cores: " + (cores > 0 ? cores : 12)),
                 createDetailLabel(String.format(Locale.US, "RAM: %.2f GB used / %.2f GB total", usedRamGb, totalRamGb)),
-                createDetailLabel(String.format(Locale.US, "Disk: %.2f GB used / %.2f GB total", usedDiskGb, totalDiskGb))
-        );
+                createDetailLabel(
+                        String.format(Locale.US, "Disk: %.2f GB used / %.2f GB total", usedDiskGb, totalDiskGb)));
 
         // 2. System Information Card (Matching Image 2)
         VBox sysCard = new VBox(10);
@@ -960,10 +1016,10 @@ public class PulseNetApp extends Application {
         sysCard.getChildren().addAll(
                 sysTitle,
                 createDetailLabel("Operating System: " + (p != null ? safe(p.getOperatingSystem()) : "Windows 11")),
-                createDetailLabel("System Uptime: " + (p != null ? formatUptime(p.getUptimeSeconds()) : "5d 5h 53m"))
-        );
+                createDetailLabel("System Uptime: " + (p != null ? formatUptime(p.getUptimeSeconds()) : "5d 5h 53m")));
 
-        // 3. Resource Performance Section (Dual charts: CPU PERFORMANCE & MEMORY PERFORMANCE)
+        // 3. Resource Performance Section (Dual charts: CPU PERFORMANCE & MEMORY
+        // PERFORMANCE)
         Label resHeading = createSectionTitle("Resource Performance");
         HBox chartRow = new HBox(16);
 
@@ -1076,8 +1132,11 @@ public class PulseNetApp extends Application {
 
         addGridItem(netGrid, 0, 0, "Current RTT", formatMs(net != null ? net.getCurrentRttMs() : -1.0), CYAN_ACCENT);
         addGridItem(netGrid, 1, 0, "Average RTT", formatMs(net != null ? net.getAvgRttMs() : -1.0), CYAN_ACCENT);
-        addGridItem(netGrid, 2, 0, "Packet Loss", (net != null ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent()) : "0.0%"), (net != null && net.getPacketLossPercent() > 0 ? RED_ACCENT : GREEN_ACCENT));
-        addGridItem(netGrid, 3, 0, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0), YELLOW_ACCENT);
+        addGridItem(netGrid, 2, 0, "Packet Loss",
+                (net != null ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent()) : "0.0%"),
+                (net != null && net.getPacketLossPercent() > 0 ? RED_ACCENT : GREEN_ACCENT));
+        addGridItem(netGrid, 3, 0, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0),
+                YELLOW_ACCENT);
 
         String gw = (im != null && im.getGatewayIp() != null) ? im.getGatewayIp() : "172.20.10.1";
         String dns = (im != null && im.getDnsResolutionTimeMs() >= 0) ? (im.getDnsResolutionTimeMs() + " ms") : "15 ms";
@@ -1097,8 +1156,7 @@ public class PulseNetApp extends Application {
                 netHeading,
                 netChartsRow,
                 probeHeading,
-                probeCard
-        );
+                probeCard);
 
         if (p != null) {
             pushChartValue(detailCpuSeries, detailCpuHistory, p.getCpuPercent());
@@ -1120,7 +1178,8 @@ public class PulseNetApp extends Application {
         }
     }
 
-    // ================= VIEW 4: NETWORK FLEET (YASHODHA'S TERMINAL-EQUIVALENT CARDS) =================
+    // ================= VIEW 4: NETWORK FLEET (YASHODHA'S TERMINAL-EQUIVALENT
+    // CARDS) =================
 
     private void showNetworkFleet() {
         currentPage = "Network Fleet";
@@ -1130,14 +1189,16 @@ public class PulseNetApp extends Application {
     }
 
     private void refreshNetworkFleet() {
-        if (!"Network Fleet".equals(currentPage)) return;
+        if (!"Network Fleet".equals(currentPage))
+            return;
         contentArea.getChildren().clear();
 
         List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
         nodes.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER));
 
         if (nodes.isEmpty()) {
-            contentArea.getChildren().add(createEmptyStateWidget("No agent nodes connected. Waiting for telemetry streaming on TCP port " + tcpPort + "..."));
+            contentArea.getChildren().add(createEmptyStateWidget(
+                    "No agent nodes connected. Waiting for telemetry streaming on TCP port " + tcpPort + "..."));
             return;
         }
 
@@ -1158,7 +1219,8 @@ public class PulseNetApp extends Application {
             Label hostPill = new Label("[Host: " + node.getAgentHostname() + "]");
             hostPill.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:12px;");
 
-            Label ipPill = new Label("[IP: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "unknown") + "]");
+            Label ipPill = new Label(
+                    "[IP: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "unknown") + "]");
             ipPill.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:12px;");
 
             Region push = new Region();
@@ -1167,7 +1229,8 @@ public class PulseNetApp extends Application {
             Button inspectBtn = createSmallButton("DRILL-DOWN");
             inspectBtn.setOnAction(e -> showNodeDetails(node.getNodeId()));
 
-            Label statusBadge = createPillBadge(isOffline ? "• OFFLINE" : "• CONNECTED", isOffline ? RED_ACCENT : GREEN_ACCENT);
+            Label statusBadge = createPillBadge(isOffline ? "• OFFLINE" : "• CONNECTED",
+                    isOffline ? RED_ACCENT : GREEN_ACCENT);
             head.getChildren().addAll(name, hostPill, ipPill, push, inspectBtn, statusBadge);
 
             Label transportLine = new Label(String.format("Server: %s:%d (TCP) | Probe: :%d (UDP) | Status: %s",
@@ -1186,20 +1249,32 @@ public class PulseNetApp extends Application {
 
             double rollingLoss = net != null ? net.getPacketLossPercent() : 0.0;
             double cumLoss = net != null ? net.getCumulativeLossPercent() : 0.0;
-            addGridItem(grid, 0, 1, "Packet Loss (Rolling)", String.format(Locale.US, "%.1f%%", rollingLoss), rollingLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
-            addGridItem(grid, 1, 1, "Cumulative Loss", String.format(Locale.US, "%.1f%%", cumLoss), cumLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
-            addGridItem(grid, 2, 1, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0), YELLOW_ACCENT);
+            addGridItem(grid, 0, 1, "Packet Loss (Rolling)", String.format(Locale.US, "%.1f%%", rollingLoss),
+                    rollingLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
+            addGridItem(grid, 1, 1, "Cumulative Loss", String.format(Locale.US, "%.1f%%", cumLoss),
+                    cumLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
+            addGridItem(grid, 2, 1, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0),
+                    YELLOW_ACCENT);
             addGridItem(grid, 3, 1, "Quality Rating", getQualityString(net), GREEN_ACCENT);
 
             addGridItem(grid, 0, 2, "Probes Sent", String.valueOf(net != null ? net.getProbesSent() : 0), WHITE_TEXT);
-            addGridItem(grid, 1, 2, "Probes Received", String.valueOf(net != null ? net.getProbesReceived() : 0), GREEN_ACCENT);
-            addGridItem(grid, 2, 2, "Probes Lost", String.valueOf(net != null ? net.getProbesLost() : 0), (net != null && net.getProbesLost() > 0 ? RED_ACCENT : WHITE_TEXT));
-            addGridItem(grid, 3, 2, "Reconnections", String.valueOf(net != null ? net.getReconnectionCount() : 0), WHITE_TEXT);
+            addGridItem(grid, 1, 2, "Probes Received", String.valueOf(net != null ? net.getProbesReceived() : 0),
+                    GREEN_ACCENT);
+            addGridItem(grid, 2, 2, "Probes Lost", String.valueOf(net != null ? net.getProbesLost() : 0),
+                    (net != null && net.getProbesLost() > 0 ? RED_ACCENT : WHITE_TEXT));
+            addGridItem(grid, 3, 2, "Reconnections", String.valueOf(net != null ? net.getReconnectionCount() : 0),
+                    WHITE_TEXT);
 
-            addGridItem(grid, 0, 3, "Default Gateway", inet != null && inet.getGatewayIp() != null ? inet.getGatewayIp() : "172.20.10.1", WHITE_TEXT);
-            addGridItem(grid, 1, 3, "DNS Query Time", inet != null && inet.getDnsResolutionTimeMs() >= 0 ? inet.getDnsResolutionTimeMs() + " ms" : "12 ms", WHITE_TEXT);
-            addGridItem(grid, 2, 3, "External HTTPS", inet != null && inet.isHttpsSuccess() ? "REACHABLE" : "REACHABLE", GREEN_ACCENT);
-            addGridItem(grid, 3, 3, "Gateway Ping", inet != null && inet.isGatewayReachable() ? "REACHABLE" : "REACHABLE", GREEN_ACCENT);
+            addGridItem(grid, 0, 3, "Default Gateway",
+                    inet != null && inet.getGatewayIp() != null ? inet.getGatewayIp() : "172.20.10.1", WHITE_TEXT);
+            addGridItem(grid, 1, 3, "DNS Query Time",
+                    inet != null && inet.getDnsResolutionTimeMs() >= 0 ? inet.getDnsResolutionTimeMs() + " ms"
+                            : "12 ms",
+                    WHITE_TEXT);
+            addGridItem(grid, 2, 3, "External HTTPS", inet != null && inet.isHttpsSuccess() ? "REACHABLE" : "REACHABLE",
+                    GREEN_ACCENT);
+            addGridItem(grid, 3, 3, "Gateway Ping",
+                    inet != null && inet.isGatewayReachable() ? "REACHABLE" : "REACHABLE", GREEN_ACCENT);
 
             card.getChildren().addAll(head, transportLine, new Separator(), grid);
             contentArea.getChildren().add(card);
@@ -1207,11 +1282,14 @@ public class PulseNetApp extends Application {
     }
 
     private String getQualityString(NetworkMetrics net) {
-        if (net == null || net.getAvgRttMs() < 0) return "UNKNOWN";
+        if (net == null || net.getAvgRttMs() < 0)
+            return "UNKNOWN";
         double rtt = net.getAvgRttMs();
         double loss = net.getPacketLossPercent();
-        if (loss > 5.0 || rtt > 150.0) return "DEGRADED";
-        if (loss > 0.0 || rtt > 60.0) return "FAIR";
+        if (loss > 5.0 || rtt > 150.0)
+            return "DEGRADED";
+        if (loss > 0.0 || rtt > 60.0)
+            return "FAIR";
         return "OPTIMAL";
     }
 
@@ -1255,12 +1333,17 @@ public class PulseNetApp extends Application {
                 Region sp = new Region();
                 HBox.setHgrow(sp, Priority.ALWAYS);
 
-                String rtt = (net != null && net.getAvgRttMs() >= 0) ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs()) : "N/A";
-                String jit = (net != null && net.getAvgJitterMs() >= 0) ? String.format(Locale.US, "%.1f ms", net.getAvgJitterMs()) : "N/A";
+                String rtt = (net != null && net.getAvgRttMs() >= 0)
+                        ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs())
+                        : "N/A";
+                String jit = (net != null && net.getAvgJitterMs() >= 0)
+                        ? String.format(Locale.US, "%.1f ms", net.getAvgJitterMs())
+                        : "N/A";
                 Label val = new Label("Avg RTT: " + rtt + "  |  Jitter: " + jit);
                 val.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";");
 
-                row.getChildren().addAll(rLbl, name, sp, val, createPillBadge(n.getStatus(), "OFFLINE".equalsIgnoreCase(n.getStatus()) ? RED_ACCENT : GREEN_ACCENT));
+                row.getChildren().addAll(rLbl, name, sp, val, createPillBadge(n.getStatus(),
+                        "OFFLINE".equalsIgnoreCase(n.getStatus()) ? RED_ACCENT : GREEN_ACCENT));
                 card.getChildren().add(row);
             }
         }
@@ -1341,7 +1424,8 @@ public class PulseNetApp extends Application {
             agentBox.setOnMouseClicked(e -> showNodeDetails(n.getNodeId()));
 
             Label nodeLbl = new Label(n.getNodeId());
-            nodeLbl.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:9px;-fx-font-weight:bold;-fx-cursor:hand;");
+            nodeLbl.setStyle(
+                    "-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:9px;-fx-font-weight:bold;-fx-cursor:hand;");
             nodeLbl.setLayoutX(ax - 28);
             nodeLbl.setLayoutY(agentY + 18);
             nodeLbl.setOnMouseClicked(e -> showNodeDetails(n.getNodeId()));
@@ -1384,13 +1468,15 @@ public class PulseNetApp extends Application {
                 HBox.setHgrow(sp, Priority.ALWAYS);
 
                 String gw = (im != null && im.getGatewayIp() != null) ? im.getGatewayIp() : "172.20.10.1";
-                String dns = (im != null && im.getDnsResolutionTimeMs() >= 0) ? (im.getDnsResolutionTimeMs() + " ms") : "12 ms";
+                String dns = (im != null && im.getDnsResolutionTimeMs() >= 0) ? (im.getDnsResolutionTimeMs() + " ms")
+                        : "12 ms";
                 String https = (im != null && im.isHttpsSuccess()) ? "HTTPS 200 OK" : "HTTPS 200 OK";
 
                 Label details = new Label("Gateway: " + gw + "  |  DNS: " + dns + "  |  External: " + https);
                 details.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-family:'Consolas', monospace;");
 
-                Label badge = createPillBadge(isOffline ? "• OFFLINE" : "• WAN ONLINE", isOffline ? RED_ACCENT : GREEN_ACCENT);
+                Label badge = createPillBadge(isOffline ? "• OFFLINE" : "• WAN ONLINE",
+                        isOffline ? RED_ACCENT : GREEN_ACCENT);
 
                 row.getChildren().addAll(name, sp, details, badge);
                 card.getChildren().add(row);
@@ -1414,8 +1500,7 @@ public class PulseNetApp extends Application {
                 createFilterButton("CRITICAL"),
                 createFilterButton("WARNING"),
                 createFilterButton("RECOVERY"),
-                createFilterButton("SYS")
-        );
+                createFilterButton("SYS"));
 
         VBox logBox = new VBox(10);
         logBox.setStyle(getPanelStyle());
@@ -1427,14 +1512,18 @@ public class PulseNetApp extends Application {
         } else {
             for (int i = events.size() - 1; i >= 0; i--) {
                 String ev = events.get(i);
-                if (!matchesFilter(ev, alertFilter)) continue;
+                if (!matchesFilter(ev, alertFilter))
+                    continue;
 
                 Label l = new Label("●  " + ev);
                 l.setWrapText(true);
                 String color = GREEN_ACCENT;
-                if (ev.contains("[WARN]")) color = YELLOW_ACCENT;
-                else if (ev.contains("[LOST]") || ev.contains("[FAIL]")) color = RED_ACCENT;
-                else if (ev.contains("[SYS]")) color = CYAN_ACCENT;
+                if (ev.contains("[WARN]"))
+                    color = YELLOW_ACCENT;
+                else if (ev.contains("[LOST]") || ev.contains("[FAIL]"))
+                    color = RED_ACCENT;
+                else if (ev.contains("[SYS]"))
+                    color = CYAN_ACCENT;
 
                 l.setStyle("-fx-text-fill:" + color + ";-fx-font-size:12px;-fx-font-family:'Consolas', monospace;");
                 logBox.getChildren().add(l);
@@ -1457,11 +1546,16 @@ public class PulseNetApp extends Application {
     }
 
     private boolean matchesFilter(String event, String filter) {
-        if ("ALL".equals(filter)) return true;
-        if ("CRITICAL".equals(filter)) return event.contains("[LOST]") || event.contains("[FAIL]");
-        if ("WARNING".equals(filter)) return event.contains("[WARN]");
-        if ("RECOVERY".equals(filter)) return event.contains("[REC]") || event.contains("[OK]");
-        if ("SYS".equals(filter)) return event.contains("[SYS]");
+        if ("ALL".equals(filter))
+            return true;
+        if ("CRITICAL".equals(filter))
+            return event.contains("[LOST]") || event.contains("[FAIL]");
+        if ("WARNING".equals(filter))
+            return event.contains("[WARN]");
+        if ("RECOVERY".equals(filter))
+            return event.contains("[REC]") || event.contains("[OK]");
+        if ("SYS".equals(filter))
+            return event.contains("[SYS]");
         return true;
     }
 
@@ -1497,13 +1591,15 @@ public class PulseNetApp extends Application {
         card.getChildren().addAll(
                 createSectionTitle("Aggregated Cluster Resources"),
                 createDetailLabel("Total Logical CPU Cores: " + (totalCores > 0 ? totalCores : 12)),
-                createDetailLabel(String.format(Locale.US, "Cluster RAM: %.2f GB used / %.2f GB total (%.1f%% Allocated)",
-                        usedRam / 1e9, totalRam / 1e9, totalRam > 0 ? (usedRam * 100.0 / totalRam) : 0.0)),
+                createDetailLabel(
+                        String.format(Locale.US, "Cluster RAM: %.2f GB used / %.2f GB total (%.1f%% Allocated)",
+                                usedRam / 1e9, totalRam / 1e9, totalRam > 0 ? (usedRam * 100.0 / totalRam) : 0.0)),
                 createDetailLabel(String.format(Locale.US, "Cluster Disk Storage: %.2f TB used / %.2f TB total",
                         usedDisk / 1e12, totalDisk / 1e12)),
-                createDetailLabel("Available Memory Headroom: " + String.format(Locale.US, "%.2f GB", Math.max(0, (totalRam - usedRam) / 1e9))),
-                createDetailLabel("Available Disk Headroom: " + String.format(Locale.US, "%.2f GB", Math.max(0, (totalDisk - usedDisk) / 1e9)))
-        );
+                createDetailLabel("Available Memory Headroom: "
+                        + String.format(Locale.US, "%.2f GB", Math.max(0, (totalRam - usedRam) / 1e9))),
+                createDetailLabel("Available Disk Headroom: "
+                        + String.format(Locale.US, "%.2f GB", Math.max(0, (totalDisk - usedDisk) / 1e9))));
 
         contentArea.getChildren().add(card);
     }
@@ -1531,10 +1627,11 @@ public class PulseNetApp extends Application {
                 createDetailLabel("Offline / Degraded Agents: " + (nodes.size() - onlineCount)),
                 new Separator(),
                 createSectionTitle("Wire Protocol Framing Specification"),
-                createDetailLabel("TCP Framing: Low-Level BSD Socket with 4-byte signed Big-Endian integer length prefix."),
-                createDetailLabel("UDP Probes: 100ms interval UDP echo probes with sequence numbering & microsecond timestamps."),
-                createDetailLabel("Watchdog Audit: 15-second heartbeat isolation window for lagging nodes.")
-        );
+                createDetailLabel(
+                        "TCP Framing: Low-Level BSD Socket with 4-byte signed Big-Endian integer length prefix."),
+                createDetailLabel(
+                        "UDP Probes: 100ms interval UDP echo probes with sequence numbering & microsecond timestamps."),
+                createDetailLabel("Watchdog Audit: 15-second heartbeat isolation window for lagging nodes."));
 
         contentArea.getChildren().add(card);
     }
@@ -1559,8 +1656,7 @@ public class PulseNetApp extends Application {
                 createDetailLabel("Watchdog Audit Timeout: " + DEFAULT_WATCHDOG_TIMEOUT + " seconds"),
                 createDetailLabel("Server Identifier: " + serverId),
                 new Separator(),
-                createSectionTitle("Detected Reachable LAN IP Addresses (For Agents):")
-        );
+                createSectionTitle("Detected Reachable LAN IP Addresses (For Agents):"));
 
         try {
             List<LanAddress> addresses = NetworkUtils.listLanIPv4Addresses();
@@ -1689,13 +1785,15 @@ public class PulseNetApp extends Application {
 
     private Label createPillBadge(String text, String color) {
         Label l = new Label(text);
-        l.setStyle("-fx-background-color:#162844;-fx-text-fill:" + color + ";-fx-border-color:" + color + ";-fx-border-radius:12;-fx-background-radius:12;-fx-font-size:11px;-fx-font-weight:bold;-fx-padding:3 10 3 10;");
+        l.setStyle("-fx-background-color:#162844;-fx-text-fill:" + color + ";-fx-border-color:" + color
+                + ";-fx-border-radius:12;-fx-background-radius:12;-fx-font-size:11px;-fx-font-weight:bold;-fx-padding:3 10 3 10;");
         return l;
     }
 
     private Button createSmallButton(String text) {
         Button b = new Button(text);
-        b.setStyle("-fx-background-color:#1e293b;-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:6;-fx-padding:5 12 5 12;-fx-cursor:hand;");
+        b.setStyle("-fx-background-color:#1e293b;-fx-text-fill:" + WHITE_TEXT
+                + ";-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:6;-fx-padding:5 12 5 12;-fx-cursor:hand;");
         return b;
     }
 
@@ -1727,11 +1825,13 @@ public class PulseNetApp extends Application {
     }
 
     private String getPanelStyle() {
-        return "-fx-background-color:" + PANEL_BG + ";-fx-background-radius:12;-fx-border-color:" + BORDER_COLOR + ";-fx-border-radius:12;";
+        return "-fx-background-color:" + PANEL_BG + ";-fx-background-radius:12;-fx-border-color:" + BORDER_COLOR
+                + ";-fx-border-radius:12;";
     }
 
     private void initSeriesPoints(XYChart.Series<Number, Number> series, List<Double> history) {
-        if (series == null) return;
+        if (series == null)
+            return;
         series.getData().clear();
         for (int i = 0; i < MAX_CHART_HISTORY; i++) {
             double val = 0.0;
@@ -1752,7 +1852,8 @@ public class PulseNetApp extends Application {
                 history.remove(0);
             }
         }
-        if (series == null) return;
+        if (series == null)
+            return;
         javafx.collections.ObservableList<XYChart.Data<Number, Number>> data = series.getData();
         if (data.size() < MAX_CHART_HISTORY) {
             initSeriesPoints(series, history);
@@ -1790,13 +1891,16 @@ public class PulseNetApp extends Application {
         long days = seconds / 86400;
         long hours = (seconds % 86400) / 3600;
         long mins = (seconds % 3600) / 60;
-        if (days > 0) return String.format(Locale.US, "%dd %dh %dm", days, hours, mins);
-        if (hours > 0) return String.format(Locale.US, "%dh %dm", hours, mins);
+        if (days > 0)
+            return String.format(Locale.US, "%dd %dh %dm", days, hours, mins);
+        if (hours > 0)
+            return String.format(Locale.US, "%dh %dm", hours, mins);
         return String.format(Locale.US, "%dm", mins);
     }
 
     private String formatMs(double ms) {
-        if (ms < 0) return "N/A";
+        if (ms < 0)
+            return "N/A";
         return String.format(Locale.US, "%.1f ms", ms);
     }
 
@@ -1807,10 +1911,14 @@ public class PulseNetApp extends Application {
     // ================= REFRESH LOOP DISPATCHER =================
 
     private void refreshCurrentView() {
-        if ("Overview".equals(currentPage)) refreshOverview();
-        else if ("Nodes".equals(currentPage)) refreshServerFleet();
-        else if ("Node Details".equals(currentPage)) refreshNodeDetails();
-        else if ("Network Fleet".equals(currentPage)) refreshNetworkFleet();
+        if ("Overview".equals(currentPage))
+            refreshOverview();
+        else if ("Nodes".equals(currentPage))
+            refreshServerFleet();
+        else if ("Node Details".equals(currentPage))
+            refreshNodeDetails();
+        else if ("Network Fleet".equals(currentPage))
+            refreshNetworkFleet();
     }
 
     // ================= SHUTDOWN =================
@@ -1821,14 +1929,20 @@ public class PulseNetApp extends Application {
     }
 
     private void shutdown() {
-        if (!shuttingDown.compareAndSet(false, true)) return;
+        if (!shuttingDown.compareAndSet(false, true))
+            return;
         LOG.info("PulseNet NOC Dashboard shutting down...");
 
-        if (refreshTimeline != null) refreshTimeline.stop();
-        if (watchdog != null) watchdog.stop();
-        if (discoveryServer != null) discoveryServer.stop();
-        if (probeServer != null) probeServer.stop();
-        if (server != null) server.stop();
+        if (refreshTimeline != null)
+            refreshTimeline.stop();
+        if (watchdog != null)
+            watchdog.stop();
+        if (discoveryServer != null)
+            discoveryServer.stop();
+        if (probeServer != null)
+            probeServer.stop();
+        if (server != null)
+            server.stop();
 
         Platform.exit();
     }

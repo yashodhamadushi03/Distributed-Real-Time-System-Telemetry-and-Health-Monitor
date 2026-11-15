@@ -222,7 +222,14 @@ public class MetricCollector {
         return -1;
     }
 
-    private double sampleCpuTemperature() {
+    private long lastTempSampleTime = 0;
+    private double cachedCpuTemperature = -1;
+
+    private synchronized double sampleCpuTemperature() {
+        long now = System.currentTimeMillis();
+        if (cachedCpuTemperature > 0 && (now - lastTempSampleTime) < 3000) {
+            return cachedCpuTemperature;
+        }
 
         try {
 
@@ -240,11 +247,13 @@ public class MetricCollector {
                 temperature = 42.0 + (load * 0.36);
             }
 
-            return round(temperature);
+            cachedCpuTemperature = round(temperature);
+            lastTempSampleTime = now;
+            return cachedCpuTemperature;
 
         } catch (Exception e) {
 
-            return -1;
+            return cachedCpuTemperature > 0 ? cachedCpuTemperature : -1;
         }
     }
 
