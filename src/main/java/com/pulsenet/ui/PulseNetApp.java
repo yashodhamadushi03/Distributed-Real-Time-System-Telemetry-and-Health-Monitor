@@ -461,7 +461,7 @@ public class PulseNetApp extends Application {
         // 3. Network and Battery Row (BATTERY, DOWNLOAD, UPLOAD)
         Label netBatteryHeading = createSectionTitle("Network and Battery");
         HBox netBatteryRow = new HBox(14);
-        VBox batteryCard = createStatCard("BATTERY", "100.0%", "0 battery-enabled node(s)", GREEN_ACCENT);
+        VBox batteryCard = createStatCard("BATTERY", "N/A", "Waiting for agents...", GREEN_ACCENT);
         VBox downloadCard = createStatCard("DOWNLOAD", "0.00 KB/s", "Incoming network traffic", BLUE_ACCENT);
         VBox uploadCard = createStatCard("UPLOAD", "0.00 KB/s", "Outgoing network traffic", PURPLE_ACCENT);
         batteryVal = (Label) batteryCard.getChildren().get(1);
@@ -668,9 +668,13 @@ public class PulseNetApp extends Application {
         double avgCpu = measuredNodes > 0 ? (cpuSum / measuredNodes) : 0.0;
         double avgMem = measuredNodes > 0 ? (memSum / measuredNodes) : 0.0;
         double avgDisk = measuredNodes > 0 ? (diskSum / measuredNodes) : 0.0;
-        double networkHealth = nodes.isEmpty() ? 100.0 : (up * 100.0 / nodes.size());
+        double networkHealth = nodes.isEmpty() ? 0.0 : (up * 100.0 / nodes.size());
 
         setDonutPercent(networkArc, networkValue, networkHealth);
+
+        if (nodes.isEmpty()) {
+            networkValue.setText("N/A");
+        }
         setDonutPercent(cpuArc, cpuValue, avgCpu);
         setDonutPercent(memoryArc, memoryValue, avgMem);
         setDonutPercent(diskArc, diskValue, avgDisk);
@@ -693,9 +697,15 @@ public class PulseNetApp extends Application {
         if (batteryNodes > 0) {
             batteryVal.setText(String.format(Locale.US, "%.1f%%", batterySum / batteryNodes));
             batteryFootVal.setText(batteryNodes + " battery-enabled node(s)");
+        } else if (up > 0) {
+            batteryVal.setText("Unavailable");
+            batteryFootVal.setText("No battery-enabled node(s)");
+        } else if (total > 0) {
+            batteryVal.setText("N/A");
+            batteryFootVal.setText("All nodes offline");
         } else {
-            batteryVal.setText("100.0%");
-            batteryFootVal.setText(total > 0 ? "No battery-enabled node(s)" : "Waiting for agents...");
+            batteryVal.setText("N/A");
+            batteryFootVal.setText("Waiting for agents...");
         }
 
         downloadSpeedVal.setText(formatSpeed(downloadTotal));
@@ -895,10 +905,16 @@ public class PulseNetApp extends Application {
                         ? String.format(Locale.US, "%.1f °C", p.getCpuTemperatureCelsius())
                         : "Unavailable");
 
-                String batteryLine = "Battery: " + (p.isBatteryAvailable()
-                        ? String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(),
-                                p.isBatteryCharging() ? "Charging" : "Not charging")
-                        : "100.0% (Not charging)");
+                String batteryLine;
+                if (isOffline) {
+                    batteryLine = "Battery: N/A";
+                } else if (p.isBatteryAvailable() && p.getBatteryPercent() >= 0) {
+                    batteryLine = String.format(Locale.US, "Battery: %.1f%% (%s)",
+                            p.getBatteryPercent(),
+                            p.isBatteryCharging() ? "Charging" : "Not charging");
+                } else {
+                    batteryLine = "Battery: Unavailable";
+                }
 
                 String downLine = "Download: " + formatSpeed(p.getDownloadBytesPerSecond());
                 String upLine = "Upload: " + formatSpeed(p.getUploadBytesPerSecond());
@@ -998,9 +1014,21 @@ public class PulseNetApp extends Application {
         double totalDiskGb = p != null ? p.getTotalDiskBytes() / 1_000_000_000.0 : 0.0;
         double usedDiskGb = p != null ? (p.getTotalDiskBytes() - p.getFreeDiskBytes()) / 1_000_000_000.0 : 0.0;
 
+        boolean isNodeOff = "OFFLINE".equalsIgnoreCase(node.getStatus());
+        String battStr;
+        if (p == null || isNodeOff) {
+            battStr = "N/A";
+        } else if (p.isBatteryAvailable() && p.getBatteryPercent() >= 0) {
+            battStr = String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(),
+                    p.isBatteryCharging() ? "Charging" : "Not charging");
+        } else {
+            battStr = "Unavailable";
+        }
+
         hwCard.getChildren().addAll(
                 hwTitle,
                 createDetailLabel("CPU Temperature: " + tempStr),
+                createDetailLabel("Battery: " + battStr),
                 createDetailLabel("CPU Logical Cores: " + (cores > 0 ? cores : 12)),
                 createDetailLabel(String.format(Locale.US, "RAM: %.2f GB used / %.2f GB total", usedRamGb, totalRamGb)),
                 createDetailLabel(
