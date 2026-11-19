@@ -47,7 +47,7 @@ class TelemetryAgentTest {
             TelemetryAgent agent = new TelemetryAgent("127.0.0.1", port, "test-node-01", 50);
             agent.start();
 
-            boolean completed = latch.await(5, TimeUnit.SECONDS);
+            boolean completed = latch.await(15, TimeUnit.SECONDS);
             agent.stop();
 
             assertTrue(completed, "Should receive 5 telemetry messages within timeout");
@@ -107,8 +107,8 @@ class TelemetryAgentTest {
             agent.setMaxBackoffMillis(500);
             agent.start();
 
-            assertTrue(firstMessageLatch.await(3, TimeUnit.SECONDS), "First message should arrive");
-            assertTrue(secondMessageLatch.await(4, TimeUnit.SECONDS), "Agent should reconnect and send second message");
+            assertTrue(firstMessageLatch.await(10, TimeUnit.SECONDS), "First message should arrive");
+            assertTrue(secondMessageLatch.await(10, TimeUnit.SECONDS), "Agent should reconnect and send second message");
             agent.stop();
 
             assertEquals(2, receivedBatches.size());

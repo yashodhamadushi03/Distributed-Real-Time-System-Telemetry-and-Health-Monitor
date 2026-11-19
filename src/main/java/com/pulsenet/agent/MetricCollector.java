@@ -191,8 +191,10 @@ public class MetricCollector {
         Temperature
     }
 
+    private volatile boolean thermalZoneSupported = true;
+
     private double sampleWindowsThermalZone() {
-        if (!System.getProperty("os.name", "").toLowerCase().contains("win")) {
+        if (!thermalZoneSupported || !System.getProperty("os.name", "").toLowerCase().contains("win")) {
             return -1;
         }
         try {
@@ -203,6 +205,10 @@ public class MetricCollector {
                             ThermalZoneProperty.class
                     );
             com.sun.jna.platform.win32.COM.WbemcliUtil.WmiResult<ThermalZoneProperty> result = handler.queryWMI(query);
+            if (result == null || result.getResultCount() == 0) {
+                thermalZoneSupported = false;
+                return -1;
+            }
             for (int i = 0; i < result.getResultCount(); i++) {
                 long rawVal = oshi.util.platform.windows.WmiUtil.getUint32asLong(result, ThermalZoneProperty.Temperature, i);
                 double celsius = -1;
@@ -217,7 +223,9 @@ public class MetricCollector {
                     return celsius;
                 }
             }
+            thermalZoneSupported = false;
         } catch (Throwable ignored) {
+            thermalZoneSupported = false;
         }
         return -1;
     }
@@ -468,12 +476,17 @@ public class MetricCollector {
 
     // ================= SYSTEM INFORMATION =================
 
-    private void collectSystemInformation(TelemetryPayload payload) {
+    private String cachedOperatingSystem = null;
+    private String cachedHostName = null;
+    private String cachedLocalIp = null;
+    private long lastIpCheckTime = 0;
 
-        payload.setOperatingSystem(
-                operatingSystem.getFamily() + " "
-                        + operatingSystem.getVersionInfo().getVersion()
-        );
+    private void collectSystemInformation(TelemetryPayload payload) {
+        if (cachedOperatingSystem == null) {
+            cachedOperatingSystem = operatingSystem.getFamily() + " "
+                    + operatingSystem.getVersionInfo().getVersion();
+        }
+        payload.setOperatingSystem(cachedOperatingSystem);
 
         payload.setHostName(getHostName());
 
@@ -485,26 +498,42 @@ public class MetricCollector {
     }
 
     private String getHostName() {
+        if (cachedHostName != null) {
+            return cachedHostName;
+        }
+
+        // Fast path: environment variables (avoids DNS / reverse lookup lag)
+        String envComputer = System.getenv("COMPUTERNAME");
+        if (envComputer != null && !envComputer.isBlank()) {
+            cachedHostName = envComputer.trim();
+            return cachedHostName;
+        }
+
+        String envHost = System.getenv("HOSTNAME");
+        if (envHost != null && !envHost.isBlank()) {
+            cachedHostName = envHost.trim();
+            return cachedHostName;
+        }
 
         try {
-
-            return InetAddress.getLocalHost().getHostName();
-
+            cachedHostName = InetAddress.getLocalHost().getHostName();
+            return cachedHostName;
         } catch (Exception e) {
-
             return "Unknown";
         }
     }
 
     private String getLocalIpAddress() {
+        long now = System.currentTimeMillis();
+        if (cachedLocalIp != null && (now - lastIpCheckTime) < 5000) {
+            return cachedLocalIp;
+        }
 
         try {
-
             Enumeration<NetworkInterface> interfaces =
                     NetworkInterface.getNetworkInterfaces();
 
             while (interfaces.hasMoreElements()) {
-
                 NetworkInterface network =
                         interfaces.nextElement();
 
@@ -516,22 +545,21 @@ public class MetricCollector {
                         network.getInetAddresses();
 
                 while (addresses.hasMoreElements()) {
-
                     InetAddress address =
                             addresses.nextElement();
 
                     if (!address.isLoopbackAddress()
                             && address.getAddress().length == 4) {
-
-                        return address.getHostAddress();
+                        cachedLocalIp = address.getHostAddress();
+                        lastIpCheckTime = now;
+                        return cachedLocalIp;
                     }
                 }
             }
-
         } catch (Exception ignored) {
         }
 
-        return "Unknown";
+        return cachedLocalIp != null ? cachedLocalIp : "Unknown";
     }
 
     // ================= PROCESS COUNT =================
