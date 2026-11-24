@@ -1,57 +1,58 @@
-/* PulseNet NOC Dark High-Contrast Theme */
-.chart-series-line {
-    -fx-stroke-width: 2.8px;
+/* PulseNet theme: navy #0B132B, panel #1C2541, slate #3A506B, teal #5BC0BE */
+.chart {
+    -fx-padding: 0;
 }
 .chart-plot-background {
-    -fx-background-color: #0d1524;
+    -fx-background-color: transparent;
 }
-.chart-vertical-grid-lines, .chart-horizontal-grid-lines {
-    -fx-stroke: #1a2a44;
-    -fx-stroke-dash-array: 2 4;
+.chart-horizontal-grid-lines {
+    -fx-stroke: #3A506B;
+    -fx-stroke-width: 0.6px;
+    -fx-opacity: 0.5;
+}
+.chart-vertical-grid-lines {
+    -fx-stroke: transparent;
 }
 .axis {
-    -fx-tick-label-fill: #90A4AE;
-    -fx-text-fill: #90A4AE;
-    -fx-font-size: 10px;
+    -fx-tick-label-fill: #9FB0C6;
+    -fx-font-size: 11px;
 }
-.axis-line {
-    -fx-stroke: #22334C;
-    -fx-stroke-width: 1.2px;
+.axis-tick-mark, .axis-minor-tick-mark {
+    -fx-stroke: transparent;
+}
+.chart-series-line {
+    -fx-stroke-width: 2px;
 }
 .chart-legend {
     -fx-background-color: transparent;
-    -fx-padding: 4px;
 }
 .chart-legend-item {
-    -fx-text-fill: #FFFFFF;
-    -fx-font-size: 11px;
-    -fx-font-weight: bold;
+    -fx-text-fill: #9FB0C6;
+    -fx-font-size: 12px;
 }
 .default-color0.chart-series-line {
-    -fx-stroke: #00E5FF;
+    -fx-stroke: #5BC0BE;
 }
-.default-color0.chart-line-symbol,
 .default-color0.chart-legend-item-symbol {
-    -fx-background-color: #00E5FF, #00E5FF;
+    -fx-background-color: #5BC0BE;
 }
 .default-color1.chart-series-line {
-    -fx-stroke: #FF9100;
+    -fx-stroke: #E6EDF3;
 }
-.default-color1.chart-line-symbol,
 .default-color1.chart-legend-item-symbol {
-    -fx-background-color: #FF9100, #FF9100;
+    -fx-background-color: #E6EDF3;
 }
-.default-color2.chart-series-line {
-    -fx-stroke: #00E676;
+.scroll-bar {
+    -fx-background-color: transparent;
 }
-.default-color2.chart-line-symbol,
-.default-color2.chart-legend-item-symbol {
-    -fx-background-color: #00E676, #00E676;
+.scroll-bar .thumb {
+    -fx-background-color: #3A506B;
+    -fx-background-radius: 4;
 }
-.default-color3.chart-series-line {
-    -fx-stroke: #C084FC;
+.scroll-bar .track, .scroll-bar .increment-button, .scroll-bar .decrement-button {
+    -fx-background-color: transparent;
 }
-.default-color3.chart-line-symbol,
-.default-color3.chart-legend-item-symbol {
-    -fx-background-color: #C084FC, #C084FC;
+.scroll-bar .increment-arrow, .scroll-bar .decrement-arrow {
+    -fx-shape: " ";
+    -fx-padding: 0;
 }

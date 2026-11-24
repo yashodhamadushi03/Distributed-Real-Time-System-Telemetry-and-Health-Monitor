@@ -16,11 +16,13 @@ Each script ships in three flavours:
 | `scripts\start-server.bat` | `.\scripts\start-server.ps1` | `scripts/start-server.sh` |
 | `scripts\start-agent.bat [SERVER_IP] [NODE_ID]` | `.\scripts\start-agent.ps1 [SERVER_IP] [NODE_ID]` | `scripts/start-agent.sh [SERVER_IP] [NODE_ID]` |
 | `scripts\probe.bat <SERVER_IP> [PORT]` | `.\scripts\probe.ps1 <SERVER_IP> [PORT]` | `scripts/probe.sh <SERVER_IP> [PORT]` |
+| `scripts\start-ui.bat` | `.\scripts\start-ui.ps1` | `scripts/start-ui.sh` |
 
 > [!TIP]
 > When `SERVER_IP` is omitted, the agent starts in **UDP Automatic Discovery Mode**, broadcasts on port 9001, locates the server on Laptop A, and connects to TCP 9000 automatically without typing any IP address!
 
 Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
+* `java -jar pulsenet.jar ui` (graphical NOC: runs the same server on ports 9000/9001/9002 **inside the JavaFX window**; use it *instead of* `server`, not alongside it)
 * `java -jar pulsenet.jar server [--port 9000] [--udp-port 9001] [--probe-port 9002]`
 * `java -jar pulsenet.jar agent --discover [--node-id <id>]`
 * `java -jar pulsenet.jar agent --host <ip> --port 9000 [--node-id <id>]`
@@ -44,13 +46,13 @@ Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
 scripts/package-demo.sh
 ```
 
-This runs `mvn clean package` (all 71 unit and integration tests) and assembles `dist/pulsenet-demo/`:
+This runs `mvn clean package` (all 113 unit and integration tests) and assembles `dist/pulsenet-demo/`:
 
 ```
 pulsenet-demo/
-  pulsenet.jar        (self-contained shaded JAR, ~2.3 MB)
+  pulsenet.jar        (self-contained shaded JAR, ~16 MB, includes JavaFX and OSHI)
   DEMO.md             (this runbook)
-  scripts/            (start-server, start-agent, probe, helpers)
+  scripts/            (start-server, start-agent, start-ui, probe, firewall helpers)
 ```
 
 Copy `dist/pulsenet-demo/` to Laptops B and C (via USB stick, shared folder, or GitHub Release).
@@ -84,6 +86,7 @@ Laptop A can run straight from the repository or from the same folder.
    ==============================================================================================================
     PulseNet Aggregator Server listening on 0.0.0.0:9000 (TCP)
     Automatic Node Discovery active on UDP port 9001
+    Advanced Network Probing active on UDP port 9002
    ==============================================================================================================
     Agents can auto-discover or connect to: 192.168.137.1:9000 (Wi-Fi)
    ```
@@ -106,6 +109,10 @@ Laptop A can run straight from the repository or from the same folder.
 | 6. Automatic Recovery | C: Turn Wi-Fi back **on** | Agent detects network return, executes exponential backoff reconnect, re-registers with same logical ID; green `[REC] Node recovered` on the **same row** (no duplicate) |
 | 7. Host Crash & Recovery | A: Press `Ctrl+C` on server, wait 5s, restart server | Both agent nodes log `Connection lost. Preparing to reconnect...`, retry with exponential backoff (1s $\to$ 2s $\to$ 4s), reconnect automatically upon server reboot, and restore dashboard |
 
+### Graphical NOC alternative (JavaFX)
+
+To present with the GUI instead of the terminal dashboard, run `scripts\start-ui.bat` on Laptop A **in place of** `start-server.bat`. Agents connect exactly the same way. It has four pages: **Overview** (averages and two live charts), **Nodes** (one row per machine; click a row for its details), **Network** (latency, jitter, packet loss) and **Events** (connects, drops, threshold alerts). Reference screenshots (1 agent + 4 simulated nodes) are in [docs/screenshots/](docs/screenshots/).
+
 ---
 
 ## 6. Troubleshooting
@@ -125,4 +132,4 @@ Laptop A can run straight from the repository or from the same folder.
 * [ ] TCP Telemetry: Live metrics appear on Laptop A within 2 seconds of agent discovery.
 * [ ] Reconnection: Turning Wi-Fi off and on reconnects Laptop B automatically with `[REC]`.
 * [ ] Host Reboot: Restarting the server reconnects all agents without manual agent intervention.
-* [ ] Test Suite: All 71 automated tests pass (`mvn test`).
+* [ ] Test Suite: All 113 automated tests pass (`mvn test`).

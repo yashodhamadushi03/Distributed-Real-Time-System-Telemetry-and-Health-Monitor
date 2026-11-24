@@ -302,7 +302,7 @@ This builds `target/pulsenet.jar` and assembles `dist/pulsenet-demo/` with all l
 
 ### C. Running the Graphical Network Operations Center (JavaFX UI)
 
-PulseNet includes a standalone, 100% Java desktop dashboard built with JavaFX that renders live KPI summary cards, RTT & Jitter trend charts, hardware load gauges, and an interactive network topology map:
+PulseNet includes a desktop dashboard built with JavaFX. It runs the server inside the window and has four pages: Overview (averages plus CPU/memory and latency charts), Nodes (a table with a per-node detail view), Network (latency, jitter, loss) and Events. Screenshots are in `docs/screenshots/`.
 
 #### Using Convenience Script:
 ```powershell
