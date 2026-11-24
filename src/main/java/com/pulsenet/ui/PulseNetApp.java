@@ -141,6 +141,7 @@ public class PulseNetApp extends Application {
     // Topology
     private Pane topologyPane;
     private String topologySignature = "";
+    private boolean topologyCompact;
 
     // One-per-second samples, recorded whichever page is open
     private final NodeHistory fleetHistory = new NodeHistory();
@@ -618,13 +619,14 @@ public class PulseNetApp extends Application {
                 false, 220, "Download (Incoming)", "Upload (Outgoing)");
         HBox row1Charts = new HBox(14, hostLoadChart.box, latencyChart.box);
 
-        // 5. Fleet Inventory & Network Status
-        Label invHeading = createSectionTitle("Fleet Inventory & Quick Node Status");
+        // 5. Fleet Inventory & Network Status, next to the live topology map
+        Label invHeading = createSectionTitle("Fleet Inventory & Live Topology");
         VBox invPanel = new VBox(10);
         invPanel.setStyle(getPanelStyle());
         invPanel.setPadding(new Insets(16));
         inventoryBoxList = new VBox(8);
         invPanel.getChildren().add(inventoryBoxList);
+        GridPane fleetRow = createResponsiveRow(invPanel, createTopologyPanel("Infrastructure Topology Map", true));
 
         // 6. Recent Activity & Watchdog Events Log
         Label actHeading = createSectionTitle("Watchdog & Real-Time Connection Events");
@@ -644,7 +646,7 @@ public class PulseNetApp extends Application {
                 row1Charts,
                 throughputChart.box,
                 invHeading,
-                invPanel,
+                fleetRow,
                 actHeading,
                 actPanel);
     }
@@ -707,6 +709,7 @@ public class PulseNetApp extends Application {
         throughputChart.update(fleetHistory, Metric.DOWNLOAD, Metric.UPLOAD);
 
         patch(inventoryBoxList, buildInventorySummary(nodes));
+        refreshTopology(nodes);
         patch(eventFeedBox, buildEventLabels(registry.getRecentEvents(12), "ALL", "No recent events recorded."));
     }
 
@@ -757,7 +760,11 @@ public class PulseNetApp extends Application {
             Button inspectBtn = createSmallButton("DETAILS");
             inspectBtn.setOnAction(e -> showNodeDetails(n.getNodeId()));
 
-            row.getChildren().addAll(left, push, statsBox, createStatusBadge(n), inspectBtn);
+            Label badge = createStatusBadge(n);
+            for (Region fixed : List.of(netLbl, hwLbl, statsBox, badge, inspectBtn)) {
+                fixed.setMinWidth(Region.USE_PREF_SIZE); // only the address may be shortened
+            }
+            row.getChildren().addAll(left, push, statsBox, badge, inspectBtn);
             rows.add(row);
         }
         return rows;
@@ -1119,16 +1126,60 @@ public class PulseNetApp extends Application {
     // ================= VIEW 6: INTERACTIVE TOPOLOGY =================
 
     private void buildTopology() {
+        contentArea.getChildren().add(createTopologyPanel("Live Agent-to-Server Communication Topology", false));
+    }
+
+    /**
+     * Creates the panel holding the topology map of the page being built.
+     *
+     * @param compact {@code true} for the shorter map on the overview
+     */
+    private VBox createTopologyPanel(String title, boolean compact) {
         VBox panel = new VBox(14);
         panel.setPadding(new Insets(20));
         panel.setStyle(getPanelStyle());
 
-        topologyPane = new Pane();
+        topologyCompact = compact;
         topologySignature = "";
+        topologyPane = new Pane();
+        topologyPane.setMinWidth(0);
+        topologyPane.setPrefWidth(300); // the panel decides the width, not the shapes drawn inside
         topologyPane.widthProperty().addListener((obs, oldW, newW) -> refreshTopology(registry.getAllNodes()));
 
-        panel.getChildren().addAll(createSectionTitle("Live Agent-to-Server Communication Topology"), topologyPane);
-        contentArea.getChildren().add(panel);
+        HBox legend = new HBox(16, createLegendItem("HEALTHY", GREEN_ACCENT),
+                createLegendItem("WARNING", YELLOW_ACCENT), createLegendItem("OFFLINE", RED_ACCENT));
+        panel.getChildren().addAll(createSectionTitle(title), topologyPane, legend);
+        return panel;
+    }
+
+    private Label createLegendItem(String text, String color) {
+        Label item = new Label("● " + text);
+        item.setStyle("-fx-text-fill:" + color + ";-fx-font-size:10px;-fx-font-weight:bold;");
+        return item;
+    }
+
+    /** Places two panels side by side, or the right one on top when the window is narrow. */
+    private GridPane createResponsiveRow(Region left, Region right) {
+        GridPane row = new GridPane();
+        row.setHgap(14);
+        row.setVgap(14);
+        Runnable arrange = () -> {
+            boolean stacked = row.getWidth() > 0 && row.getWidth() < 1100;
+            if (row.getChildren().isEmpty() || stacked != (row.getColumnConstraints().size() == 1)) {
+                ColumnConstraints first = new ColumnConstraints();
+                first.setPercentWidth(stacked ? 100 : 57);
+                ColumnConstraints second = new ColumnConstraints();
+                second.setPercentWidth(43);
+                row.getColumnConstraints().setAll(stacked ? List.of(first) : List.of(first, second));
+                row.getChildren().setAll(left, right);
+                GridPane.setConstraints(left, 0, stacked ? 1 : 0);
+                GridPane.setConstraints(right, stacked ? 0 : 1, 0);
+            }
+        };
+        arrange.run();
+        // Later, because the children of a layout must not change while it is being laid out
+        row.widthProperty().addListener((obs, oldW, newW) -> Platform.runLater(arrange));
+        return row;
     }
 
     /** Redraws only when something visible changed, so nodes stay clickable between updates. */
@@ -1146,14 +1197,14 @@ public class PulseNetApp extends Application {
     private void drawTopology(Pane pane, List<NodeRecord> nodes) {
         final double cellWidth = 120;
         final double rowHeight = 90;
-        final double agentTop = 200;
-        double w = Math.max(400, pane.getWidth());
+        final double agentTop = topologyCompact ? 160 : 200;
+        double w = pane.getWidth() > 0 ? Math.max(260, pane.getWidth()) : 400;
         double cx = w / 2;
         double serverY = 40;
 
         int perRow = Math.max(1, (int) ((w - 40) / cellWidth));
         int rows = (nodes.size() + perRow - 1) / perRow;
-        pane.setPrefHeight(Math.max(450, agentTop + rows * rowHeight));
+        pane.setPrefHeight(Math.max(topologyCompact ? 260 : 450, agentTop + rows * rowHeight));
 
         List<Node> links = new ArrayList<>();
         List<Node> shapes = new ArrayList<>();
