@@ -10,6 +10,7 @@ if /i "%~1"=="--help" goto :usage
 call "%~dp0_check-java.bat"
 if errorlevel 1 exit /b 1
 
+set "SERVER_IP="
 set "SERVER_ARG=%~1"
 set "NODE_ARG=%~2"
 set "PORT_ARG=9000"

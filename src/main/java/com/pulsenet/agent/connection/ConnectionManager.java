@@ -49,10 +49,13 @@ public class ConnectionManager {
     private volatile String currentHost;
     private volatile int currentPort;
     private volatile String selectedServerId;
+    private volatile int discoveredProbePort;
+    private volatile Socket connectingSocket; // socket whose connect() is in progress, so stop() can abort it
     private volatile Socket activeSocket;
     private volatile OutputStream activeOutputStream;
     private volatile InputStream activeInputStream;
 
+    private volatile boolean otherServersAnswered; // last discovery heard servers, but not the selected one
     private volatile long connectedTimestamp = 0L;
     private volatile long lastConnectTimestamp = 0L;
     private volatile long lastDisconnectTimestamp = 0L;
@@ -150,10 +153,13 @@ public class ConnectionManager {
             if (state.get() == ConnectionState.CONNECTED) {
                 return true;
             }
+            if (isTerminal()) {
+                return false;
+            }
 
             // If in discovery mode, attempt discovery
             if (discoveryClient != null) {
-                boolean discovered = performDiscovery();
+                boolean discovered = discoverSafely();
                 if (!discovered) {
                     if (currentHost != null && !currentHost.isBlank() && currentPort > 0) {
                         System.out.println(String.format("[DISCOVERY] Discovery yielded no server. Falling back to configured host %s:%d",
@@ -177,6 +183,22 @@ public class ConnectionManager {
         }
     }
 
+    private boolean hasNoCoordinates() {
+        return currentHost == null || currentHost.isBlank() || currentPort <= 0;
+    }
+
+    /**
+     * Runs discovery without letting an unexpected failure end the reconnect cycle.
+     */
+    private boolean discoverSafely() {
+        try {
+            return performDiscovery();
+        } catch (RuntimeException e) {
+            LOGGER.log(Level.WARNING, "[" + nodeId + "] Server discovery failed: " + e.getMessage(), e);
+            return false;
+        }
+    }
+
     /**
      * Runs UDP discovery to find the server coordinates.
      * If a serverId was previously selected, strictly locates that specific server.
@@ -186,6 +208,7 @@ public class ConnectionManager {
             return false;
         }
 
+        otherServersAnswered = false;
         List<DiscoveredServer> responses = discoveryClient.discoverAll();
         if (responses == null || responses.isEmpty()) {
             return false;
@@ -212,8 +235,10 @@ public class ConnectionManager {
                     this.currentHost = newHost;
                     this.currentPort = newPort;
                 }
+                this.discoveredProbePort = matched.udpProbePort();
                 return true;
             } else {
+                otherServersAnswered = true;
                 // Previously selected server is not in the responses; do NOT connect to a different server
                 System.out.println(String.format("[RECONNECT] Discovered %d server(s), but target server '%s' not present. Continuing discovery retries...",
                         responses.size(), selectedServerId));
@@ -233,6 +258,7 @@ public class ConnectionManager {
             this.selectedServerId = chosen.serverId();
             this.currentHost = chosen.resolveConnectHost();
             this.currentPort = chosen.tcpPort();
+            this.discoveredProbePort = chosen.udpProbePort();
             LOGGER.info(String.format("[%s] Discovered server '%s' targeting %s:%d",
                     nodeId, selectedServerId, currentHost, currentPort));
             return true;
@@ -257,11 +283,19 @@ public class ConnectionManager {
             socket = new Socket();
             socket.setTcpNoDelay(true);
             socket.setKeepAlive(true);
+            this.connectingSocket = socket;
+            if (isTerminal()) {
+                throw new SocketException("stopped");
+            }
             socket.connect(new InetSocketAddress(currentHost, currentPort), connectTimeoutMillis);
 
             this.activeOutputStream = socket.getOutputStream();
             this.activeInputStream = socket.getInputStream();
             this.activeSocket = socket;
+
+            if (isTerminal()) {
+                throw new SocketException("stopped");
+            }
 
             retryCounter.set(0); // Reset retry counter on success
             long now = System.currentTimeMillis();
@@ -276,7 +310,9 @@ public class ConnectionManager {
                 this.hasEverConnected = true;
             }
 
-            transitionTo(ConnectionState.CONNECTED);
+            if (!transitionTo(ConnectionState.CONNECTED)) {
+                throw new SocketException("stopped");
+            }
             System.out.println(String.format("[CONNECTION] Connected successfully to %s:%d [Node: %s]",
                     currentHost, currentPort, nodeId));
             LOGGER.info(String.format("[%s] Connected successfully to %s:%d", nodeId, currentHost, currentPort));
@@ -284,16 +320,21 @@ public class ConnectionManager {
             spawnConnectionMonitor(socket, this.activeInputStream);
             return true;
 
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             closeQuietly(socket);
             this.activeSocket = null;
             this.activeOutputStream = null;
             this.activeInputStream = null;
+            if (isTerminal()) {
+                return false;
+            }
 
             transitionTo(ConnectionState.RECONNECTING);
             LOGGER.log(Level.WARNING, String.format("[%s] TCP connection failed to %s:%d: %s",
                     nodeId, currentHost, currentPort, e.getMessage()));
             return false;
+        } finally {
+            this.connectingSocket = null;
         }
     }
 
@@ -309,18 +350,18 @@ public class ConnectionManager {
                     if (read == -1) {
                         // Remote peer closed socket (EOF)
                         if (isConnected() && socket == activeSocket) {
-                            notifyConnectionLost(new IOException("Remote peer closed connection (EOF)"));
+                            notifyConnectionLost(socket, new IOException("Remote peer closed connection (EOF)"));
                         }
                         break;
                     }
                 }
             } catch (SocketException e) {
                 if (isConnected() && socket == activeSocket) {
-                    notifyConnectionLost(e);
+                    notifyConnectionLost(socket, e);
                 }
             } catch (IOException e) {
                 if (isConnected() && socket == activeSocket) {
-                    notifyConnectionLost(e);
+                    notifyConnectionLost(socket, e);
                 }
             }
         }, "ConnectionMonitor-" + nodeId);
@@ -334,12 +375,26 @@ public class ConnectionManager {
      * @param cause exception that triggered the connection loss
      */
     public void notifyConnectionLost(Throwable cause) {
+        notifyConnectionLost(null, cause);
+    }
+
+    /**
+     * Signals that {@code failedSocket} was severed. Ignored if that socket has already been replaced,
+     * so a late failure on an old connection can never tear down its successor.
+     *
+     * @param failedSocket socket that failed, or {@code null} for whichever connection is active
+     * @param cause        exception that triggered the connection loss
+     */
+    public void notifyConnectionLost(Socket failedSocket, Throwable cause) {
         if (isTerminal()) {
             return;
         }
 
         connectionLock.lock();
         try {
+            if (failedSocket != null && failedSocket != activeSocket) {
+                return;
+            }
             ConnectionState current = state.get();
             if (current != ConnectionState.CONNECTED && current != ConnectionState.CONNECTING) {
                 return;
@@ -423,9 +478,11 @@ public class ConnectionManager {
                     System.out.println(String.format("[RECONNECT] Re-running UDP discovery for server '%s'...",
                             selectedServerId != null ? selectedServerId : currentHost + ":" + currentPort));
                 }
-                boolean discovered = performDiscovery();
-                if (!discovered && selectedServerId != null) {
-                    // Target server was not found among discovered responses; do not connect to a different server
+                boolean discovered = discoverSafely();
+                if (!discovered && selectedServerId != null && (otherServersAnswered || hasNoCoordinates())) {
+                    // Other servers answered but not the selected one; do not connect to a different server.
+                    // If nothing answered at all, UDP may simply be blocked: fall through and try the last
+                    // known address of the selected server.
                     scheduleReconnect();
                     return;
                 }
@@ -447,6 +504,10 @@ public class ConnectionManager {
             } else {
                 scheduleReconnect();
             }
+        } catch (RuntimeException e) {
+            // Must not end the retry chain
+            LOGGER.log(Level.WARNING, "[" + nodeId + "] Reconnect attempt failed: " + e.getMessage(), e);
+            scheduleReconnect();
         } finally {
             connectionLock.unlock();
         }
@@ -476,15 +537,17 @@ public class ConnectionManager {
      * Updates state atomically and notifies listeners.
      */
     public boolean transitionTo(ConnectionState newState) {
-        ConnectionState oldState = state.get();
-        if (oldState == newState) {
-            return false;
-        }
-        // Terminal states cannot transition to active states
-        if (oldState == ConnectionState.STOPPED && newState != ConnectionState.STOPPED) {
-            return false;
-        }
-        state.set(newState);
+        ConnectionState oldState;
+        do {
+            oldState = state.get();
+            if (oldState == newState) {
+                return false;
+            }
+            // Terminal states cannot transition to active states
+            if (oldState.isTerminal() && newState != ConnectionState.STOPPED) {
+                return false;
+            }
+        } while (!state.compareAndSet(oldState, newState));
         LOGGER.fine(String.format("[%s] Connection state changed: %s -> %s", nodeId, oldState, newState));
         for (ConnectionStateListener listener : listeners) {
             try {
@@ -500,21 +563,19 @@ public class ConnectionManager {
      * Initiates graceful shutdown: cancels pending retries, closes active sockets, releases resources.
      */
     public void stop() {
-        connectionLock.lock();
-        try {
-            if (transitionTo(ConnectionState.STOPPING)) {
-                LOGGER.info(String.format("[%s] ConnectionManager stopping cleanly...", nodeId));
-                closeOldResources();
+        // Deliberately does not take connectionLock: a connect or discovery in progress holds it for
+        // seconds, and the state change plus closing its socket makes it give up.
+        if (transitionTo(ConnectionState.STOPPING)) {
+            LOGGER.info(String.format("[%s] ConnectionManager stopping cleanly...", nodeId));
+            closeQuietly(connectingSocket);
+            closeOldResources();
 
-                if (ownsScheduler) {
-                    scheduler.shutdownNow();
-                }
-
-                transitionTo(ConnectionState.STOPPED);
-                LOGGER.info(String.format("[%s] ConnectionManager stopped.", nodeId));
+            if (ownsScheduler) {
+                scheduler.shutdownNow();
             }
-        } finally {
-            connectionLock.unlock();
+
+            transitionTo(ConnectionState.STOPPED);
+            LOGGER.info(String.format("[%s] ConnectionManager stopped.", nodeId));
         }
     }
 
@@ -548,6 +609,13 @@ public class ConnectionManager {
 
     public int getCurrentPort() {
         return currentPort;
+    }
+
+    /**
+     * @return UDP probe port announced by the discovered server, or {@code 0} if not discovered
+     */
+    public int getDiscoveredProbePort() {
+        return discoveredProbePort;
     }
 
     public int getRetryCount() {

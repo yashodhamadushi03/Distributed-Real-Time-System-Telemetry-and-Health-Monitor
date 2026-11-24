@@ -55,6 +55,7 @@ public class InternetMonitor implements Runnable {
     private final InternetConnectivityMetrics currentMetrics = new InternetConnectivityMetrics();
 
     private ScheduledExecutorService scheduler;
+    private volatile String lastGatewaySummary;
 
     // Testable probe delegates
     private GatewayProbe gatewayProbe = this::defaultGatewayProbe;
@@ -130,13 +131,17 @@ public class InternetMonitor implements Runnable {
      */
     public void triggerImmediateCheck() {
         if (running.get() && scheduler != null && !scheduler.isShutdown()) {
-            scheduler.execute(() -> {
-                try {
-                    executeCheck();
-                } catch (Throwable t) {
-                    LOGGER.log(Level.FINE, "[" + nodeId + "] Error during immediate Internet check: " + t.getMessage());
-                }
-            });
+            try {
+                scheduler.execute(() -> {
+                    try {
+                        executeCheck();
+                    } catch (Throwable t) {
+                        LOGGER.log(Level.FINE, "[" + nodeId + "] Error during immediate Internet check: " + t.getMessage());
+                    }
+                });
+            } catch (RejectedExecutionException e) {
+                LOGGER.log(Level.FINE, "[" + nodeId + "] Internet monitor is stopping");
+            }
         }
     }
 
@@ -311,7 +316,8 @@ public class InternetMonitor implements Runnable {
 
             int code = conn.getResponseCode();
             long elapsed = System.currentTimeMillis() - start;
-            boolean ok = (code >= 200 && code < 400);
+            // A "generate_204" endpoint answering anything else is a captive portal, not the Internet.
+            boolean ok = endpoint.contains("generate_204") ? code == 204 : (code >= 200 && code < 400);
             return new HttpsResult(ok, code, elapsed);
         } catch (Exception e) {
             return new HttpsResult(false, -1, -1L);
@@ -342,8 +348,11 @@ public class InternetMonitor implements Runnable {
                     return true;
                 } catch (SocketTimeoutException ignored) {
                 } catch (ConnectException e) {
-                    // "Connection refused" indicates the host is active on the network and actively refused the port
-                    return true;
+                    // "Connection refused" indicates the host is active on the network and actively refused the
+                    // port; any other ConnectException (timed out, network unreachable) proves nothing.
+                    if (e.getMessage() != null && e.getMessage().toLowerCase(Locale.ROOT).contains("refused")) {
+                        return true;
+                    }
                 } catch (Exception ignored) {
                 }
             }
@@ -357,7 +366,8 @@ public class InternetMonitor implements Runnable {
      * and reachability verification without hardcoding a .1 address.
      */
     public String resolveDefaultGatewayIp() {
-        String targetInterfaceIp = (activeLocalAddress != null) ? activeLocalAddress.getHostAddress() : null;
+        InetAddress active = activeLocalAddress;
+        String targetInterfaceIp = (active != null && isLocalAddress(active)) ? active.getHostAddress() : null;
 
         // If not explicitly set from TCP socket, find primary candidate LAN IP
         if (targetInterfaceIp == null) {
@@ -406,10 +416,22 @@ public class InternetMonitor implements Runnable {
         }
 
         String finalGateway = (gateway != null && !gateway.isBlank() && !"0.0.0.0".equals(gateway)) ? gateway : "unknown";
-        LOGGER.info(String.format("[%s] Gateway Discovery: InterfaceIP=%s, Gateway=%s, Method=%s",
-                nodeId, targetInterfaceIp != null ? targetInterfaceIp : "unknown", finalGateway, discoveryMethod));
+        String summary = String.format("[%s] Gateway Discovery: InterfaceIP=%s, Gateway=%s, Method=%s",
+                nodeId, targetInterfaceIp != null ? targetInterfaceIp : "unknown", finalGateway, discoveryMethod);
+        // Runs every few seconds: only report changes
+        LOGGER.log(summary.equals(lastGatewaySummary) ? Level.FINE : Level.INFO, summary);
+        lastGatewaySummary = summary;
 
         return finalGateway;
+    }
+
+    /** @return whether {@code address} is still assigned to one of this machine's interfaces */
+    private static boolean isLocalAddress(InetAddress address) {
+        try {
+            return NetworkInterface.getByInetAddress(address) != null;
+        } catch (SocketException e) {
+            return false;
+        }
     }
 
     private String discoverWindowsGateway(String targetInterfaceIp) {

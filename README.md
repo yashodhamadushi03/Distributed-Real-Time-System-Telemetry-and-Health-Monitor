@@ -321,6 +321,12 @@ java -jar target/pulsenet.jar ui
 mvn javafx:run
 ```
 
+The UI **is** the server: it listens on TCP 9000, UDP 9001 and UDP 9002, so do not start `server` on the same laptop at the same time. The header shows the address agents should use.
+
+*UI Options:* `--host`, `--port`, `--udp-port`, `--probe-port`, `--server-id`, `--watchdog-timeout` (default `5.0`). Run `java -jar target/pulsenet.jar ui --help` for details.
+
+> The shaded JAR contains the JavaFX natives of the operating system it was built on. Build it on Windows for Windows laptops, on macOS for Macs, and so on. The `server` and `agent` commands run anywhere.
+
 ---
 
 ### D. Running the Central Aggregator Server (CLI Dashboard)
@@ -408,6 +414,7 @@ This test proves both **UDP Automatic Node Discovery** and **Automatic TCP Recon
      New-NetFirewallRule -DisplayName "PulseNet UDP Discovery" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
      New-NetFirewallRule -DisplayName "PulseNet UDP Probe" -Direction Inbound -Protocol UDP -LocalPort 9002 -Action Allow
      ```
+     or run `scripts\open-firewall.ps1` as Administrator, which opens all three (`close-firewall.ps1` removes them).
    * Or allow Java when prompted by Windows Defender Firewall.
 
 ---
@@ -481,6 +488,9 @@ java -jar pulsenet.jar server --port 9000 --udp-port 9001
 | Discovery times out: `No PulseNet server found` | Public network profile or firewall dropping UDP 9001 | Check firewall rules on Laptop A. Allow UDP port 9001. Ensure network is set to "Private". |
 | `probe` or TCP connect reports `TIMEOUT` | Enterprise Wi-Fi **client isolation** | Many university/corporate Wi-Fi networks prevent device-to-device communication. Switch to a mobile hotspot. |
 | Discovery finds wrong IP address | Server machine has multiple virtual adapters (WSL, Hyper-V, VPN) | PulseNet automatically filters virtual adapters. If an active VPN interferes, pass `--host` explicitly or disconnect the VPN. |
+| Node appears twice as `name` and `name (2)` | Two agents are running with the same node ID | Give each agent its own `--node-id`. |
+| Packet loss shows 100% while telemetry works | Firewall dropping UDP 9002 | Run `open-firewall.ps1` on Laptop A. |
+| CPU temperature shows `Unavailable` | Windows exposes no sensor to a normal process on this laptop | Expected; PulseNet only shows measured values. |
 | Agent repeatedly reconnects | Network latency exceeds socket read timeout | Increase server read timeout with `--read-timeout 30`. |
 
 ### Limitations of UDP Broadcast

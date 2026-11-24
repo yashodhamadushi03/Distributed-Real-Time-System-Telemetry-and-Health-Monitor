@@ -29,8 +29,18 @@ public class NodeRegistry {
      */
     private final Map<String, Object> connectionOwners = new HashMap<>();
 
+    /**
+     * Connections whose node ID was taken over by a newer connection, by identity.
+     * Guarded by {@link #lock}.
+     */
+    private final Map<Object, SupersededConnection> superseded = new IdentityHashMap<>();
+
+    /** A superseded connection that keeps sending this much, this long, is a second live agent. */
+    private static final int DUPLICATE_MIN_FRAMES = 3;
+    private static final long DUPLICATE_MIN_MILLIS = 2_000L;
+
     // Rolling event log for dashboard rendering (thread-safe, bounded)
-    private static final int MAX_EVENTS = 50;
+    private static final int MAX_EVENTS = 200;
     private final Deque<String> eventLog = new ConcurrentLinkedDeque<>();
     private final SimpleDateFormat timeFormat = new SimpleDateFormat("HH:mm:ss");
 
@@ -72,12 +82,16 @@ public class NodeRegistry {
         }
 
         long now = System.currentTimeMillis();
-        String nodeId = payload.getNodeId();
 
         lock.lock();
         try {
+            String nodeId = resolveNodeId(payload.getNodeId(), remoteAddress, connectionOwner, now);
+            if (nodeId == null) {
+                return; // Late frame from a superseded connection
+            }
             NodeRecord existing = nodes.get(nodeId);
             TelemetryPayload previousPayload = null;
+            boolean recovered = false;
             if (existing == null) {
                 NodeRecord newRecord = new NodeRecord(nodeId, payload, remoteAddress, now);
                 nodes.put(nodeId, newRecord);
@@ -87,17 +101,19 @@ public class NodeRegistry {
                 String previousStatus = existing.getStatus();
                 existing.update(payload, remoteAddress, now);
                 if ("OFFLINE".equals(previousStatus)) {
-                    existing.setStatus(payload.getStatus());
+                    recovered = true;
                     logEvent(String.format("[REC]  Node recovered: %s (%s)", nodeId, remoteAddress));
-                } else if (connectionOwner != null) {
-                    Object previousOwner = connectionOwners.get(nodeId);
-                    if (previousOwner != null && previousOwner != connectionOwner) {
+                }
+            }
+            if (connectionOwner != null) {
+                Object previousOwner = connectionOwners.get(nodeId);
+                if (previousOwner != null && previousOwner != connectionOwner) {
+                    superseded.put(previousOwner, new SupersededConnection());
+                    if (!recovered) {
                         logEvent(String.format("[SYS]  Node reconnected on new connection: %s (%s)",
                                 nodeId, remoteAddress));
                     }
                 }
-            }
-            if (connectionOwner != null) {
                 connectionOwners.put(nodeId, connectionOwner);
             }
             if (payload.getNetworkMetrics() != null) {
@@ -107,6 +123,51 @@ public class NodeRegistry {
         } finally {
             lock.unlock();
         }
+    }
+
+    /**
+     * Works out which node row a frame belongs to. Normally that is simply the reported node ID. If
+     * the delivering connection was superseded by a newer one, its frames are ignored at first (they
+     * may be leftovers from a half-open socket); if it keeps sending, two live agents are using the
+     * same node ID, and it is moved to its own row ({@code "name (2)"}) so neither hides the other.
+     * Caller holds the lock.
+     *
+     * @return the row's node ID, or {@code null} if the frame must be ignored
+     */
+    private String resolveNodeId(String reportedId, String remoteAddress, Object owner, long now) {
+        SupersededConnection state = owner != null ? superseded.get(owner) : null;
+        if (state == null) {
+            return reportedId;
+        }
+        if (state.alias != null) {
+            return state.alias;
+        }
+        if (!connectionOwners.containsKey(reportedId)) {
+            // The newer connection is gone again; this one may reclaim the ID.
+            superseded.remove(owner);
+            return reportedId;
+        }
+        if (state.frames++ == 0) {
+            state.firstFrameAt = now;
+        }
+        if (state.frames < DUPLICATE_MIN_FRAMES || now - state.firstFrameAt < DUPLICATE_MIN_MILLIS) {
+            return null;
+        }
+        int suffix = 2;
+        while (connectionOwners.containsKey(reportedId + " (" + suffix + ")")) {
+            suffix++;
+        }
+        state.alias = reportedId + " (" + suffix + ")";
+        logEvent(String.format("[WARN] Two agents use node ID '%s'; showing %s as '%s'. Give each agent its own --node-id",
+                reportedId, remoteAddress, state.alias));
+        return state.alias;
+    }
+
+    /** Tracks a connection whose node ID was taken over by a newer connection. */
+    private static final class SupersededConnection {
+        private int frames;
+        private long firstFrameAt;
+        private String alias;
     }
 
     /**
@@ -143,8 +204,10 @@ public class NodeRegistry {
         }
         lock.lock();
         try {
-            if (connectionOwners.get(nodeId) == owner) {
-                connectionOwners.remove(nodeId);
+            SupersededConnection state = superseded.remove(owner);
+            String rowId = state != null && state.alias != null ? state.alias : nodeId;
+            if (connectionOwners.get(rowId) == owner) {
+                connectionOwners.remove(rowId);
                 return true;
             }
             return false;
@@ -168,7 +231,7 @@ public class NodeRegistry {
     }
 
     /**
-     * Returns a snapshot list containing defensive copies of all registered nodes.
+     * Returns a snapshot list containing defensive copies of all registered nodes, ordered by node ID.
      *
      * @return List of NodeRecord defensive copies.
      */
@@ -179,6 +242,8 @@ public class NodeRegistry {
             for (NodeRecord record : nodes.values()) {
                 snapshot.add(new NodeRecord(record));
             }
+            snapshot.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER)
+                    .thenComparing(NodeRecord::getNodeId));
             return snapshot;
         } finally {
             lock.unlock();
@@ -279,6 +344,7 @@ public class NodeRegistry {
         try {
             nodes.clear();
             connectionOwners.clear();
+            superseded.clear();
             eventLog.clear();
             networkHistoryRegistry.clear();
         } finally {

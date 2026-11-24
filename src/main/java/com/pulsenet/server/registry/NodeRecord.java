@@ -21,7 +21,7 @@ public class NodeRecord {
         this.latestPayload = payload;
         this.remoteAddress = remoteAddress;
         this.lastSeenTimestamp = lastSeenTimestamp;
-        this.status = payload != null ? payload.getStatus() : "HEALTHY";
+        this.status = reportedStatus(payload);
     }
 
     /**
@@ -40,8 +40,16 @@ public class NodeRecord {
         this.remoteAddress = remoteAddress;
         this.lastSeenTimestamp = timestamp;
         if (payload != null) {
-            this.status = payload.getStatus() != null ? payload.getStatus() : "HEALTHY";
+            this.status = reportedStatus(payload);
         }
+    }
+
+    /**
+     * Normalizes the status reported by an agent. A node that is sending telemetry is either
+     * {@code HEALTHY} or {@code WARNING}; only the watchdog may declare it {@code OFFLINE}.
+     */
+    private static String reportedStatus(TelemetryPayload payload) {
+        return payload != null && "WARNING".equalsIgnoreCase(payload.getStatus()) ? "WARNING" : "HEALTHY";
     }
 
     public String getNodeId() {

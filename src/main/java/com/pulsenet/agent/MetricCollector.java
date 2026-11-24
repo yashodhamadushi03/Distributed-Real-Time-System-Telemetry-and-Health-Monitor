@@ -2,6 +2,7 @@
 package com.pulsenet.agent;
 
 import com.pulsenet.common.model.TelemetryPayload;
+import com.pulsenet.common.net.NetworkUtils;
 
 import oshi.SystemInfo;
 import oshi.hardware.HardwareAbstractionLayer;
@@ -14,12 +15,15 @@ import oshi.software.os.OperatingSystem;
 
 import java.io.File;
 import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.logging.Logger;
 import java.lang.management.ManagementFactory;
 
 public class MetricCollector {
+
+    private static final Logger LOGGER = Logger.getLogger(MetricCollector.class.getName());
 
     private final SystemInfo systemInfo;
     private final HardwareAbstractionLayer hardware;
@@ -34,18 +38,37 @@ public class MetricCollector {
     private long[] previousCpuTicks;
 
     // Network tracking
-    private long previousNetworkReceived = -1;
-    private long previousNetworkSent = -1;
+    private Map<String, long[]> previousNetworkCounters = new HashMap<>();
     private long previousNetworkTime = -1;
-
-    // Battery diagnostic logging
-    private long lastBatteryDiagnosticTime = 0;
 
     private final List<File> diskPartitions;
 
     // ================= CONSTRUCTOR =================
 
     public MetricCollector() {
+        this(true);
+    }
+
+    /**
+     * @param hardwareAccess {@code false} for collectors that generate their own values and must not
+     *                       pay for (or depend on) reading this machine's hardware
+     */
+    protected MetricCollector(boolean hardwareAccess) {
+
+        startTime = ManagementFactory
+                .getRuntimeMXBean()
+                .getStartTime();
+
+        if (!hardwareAccess) {
+            systemInfo = null;
+            hardware = null;
+            processor = null;
+            memory = null;
+            sensors = null;
+            operatingSystem = null;
+            diskPartitions = List.of();
+            return;
+        }
 
         systemInfo = new SystemInfo();
 
@@ -61,11 +84,9 @@ public class MetricCollector {
 
         operatingSystem = systemInfo.getOperatingSystem();
 
-        startTime = ManagementFactory
-                .getRuntimeMXBean()
-                .getStartTime();
+        File[] roots = File.listRoots();
 
-        diskPartitions = List.of(File.listRoots());
+        diskPartitions = roots != null ? List.of(roots) : List.of();
     }
 
     // ================= MAIN COLLECTION METHOD =================
@@ -235,34 +256,31 @@ public class MetricCollector {
 
     private synchronized double sampleCpuTemperature() {
         long now = System.currentTimeMillis();
-        if (cachedCpuTemperature > 0 && (now - lastTempSampleTime) < 3000) {
+        long maxAge = cachedCpuTemperature > 0 ? 3_000 : 30_000;
+        if (lastTempSampleTime > 0 && (now - lastTempSampleTime) < maxAge) {
             return cachedCpuTemperature;
         }
+
+        // -1 means "this machine exposes no CPU temperature". Never estimate one: an invented
+        // reading is indistinguishable from a measured one on the dashboard.
+        double temperature = -1;
 
         try {
 
-            double temperature = sensors.getCpuTemperature();
+            temperature = sensors.getCpuTemperature();
 
-            if (Double.isNaN(temperature) || temperature <= 0) {
+            if (!Double.isFinite(temperature) || temperature <= 0) {
                 temperature = sampleWindowsThermalZone();
             }
 
-            // If hardware ACPI sensor is completely masked by OEM driver,
-            // provide a dynamic thermal estimate derived from active CPU core load:
-            // Baseline 42.0°C idle + (cpuLoad * 0.36°C)
-            if (Double.isNaN(temperature) || temperature <= 0) {
-                double load = sampleCpuPercent();
-                temperature = 42.0 + (load * 0.36);
-            }
-
-            cachedCpuTemperature = round(temperature);
-            lastTempSampleTime = now;
-            return cachedCpuTemperature;
-
         } catch (Exception e) {
 
-            return cachedCpuTemperature > 0 ? cachedCpuTemperature : -1;
+            temperature = -1;
         }
+
+        cachedCpuTemperature = Double.isFinite(temperature) && temperature > 0 ? round(temperature) : -1;
+        lastTempSampleTime = now;
+        return cachedCpuTemperature;
     }
 
     // ================= BATTERY =================
@@ -375,19 +393,9 @@ public class MetricCollector {
         }
     }
 
-    // Print battery diagnostics every 10 seconds
     private void logBatteryDiagnostic(String message) {
 
-        long currentTime = System.currentTimeMillis();
-
-        if (currentTime - lastBatteryDiagnosticTime >= 10_000) {
-
-            System.out.println(
-                    "[PULSENET BATTERY DIAGNOSTIC] " + message
-            );
-
-            lastBatteryDiagnosticTime = currentTime;
-        }
+        LOGGER.fine("Battery diagnostic: " + message);
     }
 
     // ================= NETWORK =================
@@ -398,27 +406,36 @@ public class MetricCollector {
 
         long sent = 0;
 
+        long receivedDelta = 0;
+
+        long sentDelta = 0;
+
+        Map<String, long[]> counters = new HashMap<>();
+
         try {
 
-            List<NetworkIF> interfaces =
-                    hardware.getNetworkIFs();
-
-            for (NetworkIF network : interfaces) {
+            for (NetworkIF network : physicalInterfaces(hardware.getNetworkIFs())) {
 
                 try {
 
                     network.updateAttributes();
 
-                    if (network.getName() == null) {
-                        continue;
-                    }
+                    long in = Math.max(0, network.getBytesRecv());
 
-                    if (network.getBytesRecv() >= 0) {
-                        received += network.getBytesRecv();
-                    }
+                    long out = Math.max(0, network.getBytesSent());
 
-                    if (network.getBytesSent() >= 0) {
-                        sent += network.getBytesSent();
+                    received += in;
+
+                    sent += out;
+
+                    counters.put(network.getName(), new long[]{in, out});
+
+                    // Per-interface deltas: an adapter that appears or resets must not look like a burst
+                    long[] previous = previousNetworkCounters.get(network.getName());
+
+                    if (previous != null) {
+                        receivedDelta += Math.max(0, in - previous[0]);
+                        sentDelta += Math.max(0, out - previous[1]);
                     }
 
                 } catch (Exception ignored) {
@@ -432,32 +449,15 @@ public class MetricCollector {
 
         long currentTime = System.currentTimeMillis();
 
-        double downloadSpeed = 0;
+        long elapsed = currentTime - previousNetworkTime;
 
-        double uploadSpeed = 0;
+        boolean measurable = previousNetworkTime > 0 && elapsed > 0;
 
-        if (previousNetworkTime > 0
-                && previousNetworkReceived >= 0
-                && previousNetworkSent >= 0) {
+        double downloadSpeed = measurable ? receivedDelta * 1000.0 / elapsed : 0;
 
-            long elapsed =
-                    currentTime - previousNetworkTime;
+        double uploadSpeed = measurable ? sentDelta * 1000.0 / elapsed : 0;
 
-            if (elapsed > 0) {
-
-                downloadSpeed =
-                        Math.max(0, received - previousNetworkReceived)
-                                * 1000.0 / elapsed;
-
-                uploadSpeed =
-                        Math.max(0, sent - previousNetworkSent)
-                                * 1000.0 / elapsed;
-            }
-        }
-
-        previousNetworkReceived = received;
-
-        previousNetworkSent = sent;
+        previousNetworkCounters = counters;
 
         previousNetworkTime = currentTime;
 
@@ -472,6 +472,18 @@ public class MetricCollector {
         payload.setUploadBytesPerSecond(
                 round(uploadSpeed)
         );
+    }
+
+    /**
+     * Leaves out virtual adapters (Hyper-V, VPN, ...), whose traffic is already counted on the physical
+     * adapter it travels through. Falls back to every named interface if nothing physical is left.
+     */
+    private static List<NetworkIF> physicalInterfaces(List<NetworkIF> interfaces) {
+        List<NetworkIF> named = interfaces.stream().filter(n -> n.getName() != null).toList();
+        List<NetworkIF> physical = named.stream()
+                .filter(n -> !NetworkUtils.isVirtualInterface(n.getName(), n.getDisplayName()))
+                .toList();
+        return physical.isEmpty() ? named : physical;
     }
 
     // ================= SYSTEM INFORMATION =================
@@ -529,34 +541,10 @@ public class MetricCollector {
             return cachedLocalIp;
         }
 
-        try {
-            Enumeration<NetworkInterface> interfaces =
-                    NetworkInterface.getNetworkInterfaces();
-
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface network =
-                        interfaces.nextElement();
-
-                if (network.isLoopback() || !network.isUp()) {
-                    continue;
-                }
-
-                Enumeration<InetAddress> addresses =
-                        network.getInetAddresses();
-
-                while (addresses.hasMoreElements()) {
-                    InetAddress address =
-                            addresses.nextElement();
-
-                    if (!address.isLoopbackAddress()
-                            && address.getAddress().length == 4) {
-                        cachedLocalIp = address.getHostAddress();
-                        lastIpCheckTime = now;
-                        return cachedLocalIp;
-                    }
-                }
-            }
-        } catch (Exception ignored) {
+        List<NetworkUtils.LanAddress> addresses = NetworkUtils.listLanIPv4Addresses();
+        if (!addresses.isEmpty()) {
+            cachedLocalIp = addresses.get(0).address();
+            lastIpCheckTime = now;
         }
 
         return cachedLocalIp != null ? cachedLocalIp : "Unknown";

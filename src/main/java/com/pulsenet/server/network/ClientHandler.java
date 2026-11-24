@@ -50,7 +50,16 @@ public class ClientHandler implements Runnable {
 
                 try {
                     TelemetryPayload payload = TelemetryPayload.fromJson(jsonMessage);
-                    this.associatedNodeId = payload.getNodeId();
+                    String nodeId = payload != null ? payload.getNodeId() : null;
+                    if (nodeId == null || nodeId.isBlank()) {
+                        throw new IllegalArgumentException("telemetry has no nodeId");
+                    }
+                    String previousNodeId = this.associatedNodeId;
+                    if (previousNodeId != null && !previousNodeId.equals(nodeId)) {
+                        // The connection now reports as a different node: give up the old identity.
+                        registry.releaseConnection(previousNodeId, this);
+                    }
+                    this.associatedNodeId = nodeId;
 
                     // Fast thread-safe state update under NodeRegistry lock. Passing this handler as
                     // the connection owner lets the registry detect superseded connections; threshold

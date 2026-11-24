@@ -54,6 +54,9 @@ public class NetworkProbeClient implements Runnable {
     // In-flight probe records: sequence -> sendTimestamp
     final ConcurrentMap<Long, Long> inFlightProbes = new ConcurrentHashMap<>();
 
+    // Monotonic send times, for sub-millisecond RTTs: sequence -> System.nanoTime()
+    private final ConcurrentMap<Long, Long> sendNanos = new ConcurrentHashMap<>();
+
     // Sliding window of recent probe outcomes: true = received, false = lost
     final Deque<Boolean> outcomeWindow = new ArrayDeque<>();
     private final ReentrantLock statsLock = new ReentrantLock();
@@ -71,7 +74,7 @@ public class NetworkProbeClient implements Runnable {
     private double avgJitterMs = -1.0;
     private long jitterSampleCount = 0L;
 
-    private DatagramSocket socket;
+    private volatile DatagramSocket socket;
     private Thread rxThread;
     private ScheduledExecutorService txScheduler;
 
@@ -105,10 +108,9 @@ public class NetworkProbeClient implements Runnable {
      * Starts the probe receiver daemon thread and scheduled transmitter.
      */
     public synchronized void start() throws SocketException {
-        if (running.compareAndSet(false, true)) {
-            this.socket = new DatagramSocket(null);
-            this.socket.setReuseAddress(true);
-            this.socket.bind(new InetSocketAddress(0)); // Bind to ephemeral UDP port
+        if (!running.get()) {
+            this.socket = new DatagramSocket(new InetSocketAddress(0)); // Bind to ephemeral UDP port
+            running.set(true);
 
             rxThread = new Thread(this, "NetworkProbeClient-Rx-" + nodeId);
             rxThread.setDaemon(true);
@@ -140,25 +142,26 @@ public class NetworkProbeClient implements Runnable {
             return; // Target endpoint not yet discovered/resolved
         }
 
+        long now = System.currentTimeMillis();
         try {
+            InetAddress targetAddr = InetAddress.getByName(host);
             long seq = sequenceCounter.incrementAndGet();
-            long now = System.currentTimeMillis();
-
-            inFlightProbes.put(seq, now);
-            totalProbesSent.incrementAndGet();
+            now = System.currentTimeMillis();
 
             NetworkProbePacket probe = NetworkProbePacket.createRequest(seq, now, nodeId);
             byte[] bytes = probe.toBytes();
 
-            InetAddress targetAddr = InetAddress.getByName(host);
             DatagramPacket txPacket = new DatagramPacket(bytes, bytes.length, targetAddr, port);
+            inFlightProbes.put(seq, now);
+            sendNanos.put(seq, System.nanoTime());
+            totalProbesSent.incrementAndGet();
             socket.send(txPacket);
-
-            // Audit in-flight probes for timeouts
-            auditInFlightTimeouts(now);
 
         } catch (Exception e) {
             LOGGER.log(Level.FINE, "[" + nodeId + "] Error sending network probe: " + e.getMessage());
+        } finally {
+            // Also runs when sending failed, so lost probes are counted while the network is down
+            auditInFlightTimeouts(now);
         }
     }
 
@@ -172,6 +175,7 @@ public class NetworkProbeClient implements Runnable {
             long sendTime = entry.getValue();
             if (currentTime - sendTime > probeTimeoutMillis) {
                 it.remove();
+                sendNanos.remove(entry.getKey());
                 totalProbesLost.incrementAndGet();
                 recordWindowOutcome(false);
             }
@@ -185,18 +189,20 @@ public class NetworkProbeClient implements Runnable {
     public void run() {
         byte[] buffer = new byte[BUFFER_SIZE];
 
+        final DatagramSocket socket = this.socket;
         while (running.get() && socket != null && !socket.isClosed()) {
             try {
                 DatagramPacket rxPacket = new DatagramPacket(buffer, buffer.length);
                 socket.receive(rxPacket);
 
+                long rxNanos = System.nanoTime();
                 long rxTime = System.currentTimeMillis();
                 NetworkProbePacket packet = NetworkProbePacket.fromBytes(
                         rxPacket.getData(), rxPacket.getOffset(), rxPacket.getLength()
                 );
 
                 if (packet != null && packet.isResponse()) {
-                    handleProbeResponse(packet, rxTime);
+                    handleProbeResponse(packet, rxTime, rxNanos);
                 }
 
             } catch (SocketException e) {
@@ -220,6 +226,14 @@ public class NetworkProbeClient implements Runnable {
      * Processes a valid probe response, updating RTT, Jitter, and Packet Loss statistics.
      */
     void handleProbeResponse(NetworkProbePacket response, long rxTime) {
+        handleProbeResponse(response, rxTime, -1L);
+    }
+
+    /**
+     * @param rxTime  wall-clock receive time, used when the probe has no monotonic send time
+     * @param rxNanos {@link System#nanoTime()} at receipt, or {@code -1} if unavailable
+     */
+    private void handleProbeResponse(NetworkProbePacket response, long rxTime, long rxNanos) {
         if (response.getNodeId() != null && !response.getNodeId().isBlank() && !this.nodeId.equals(response.getNodeId())) {
             return; // Reject probe response belonging to another node
         }
@@ -232,7 +246,10 @@ public class NetworkProbeClient implements Runnable {
             return;
         }
 
-        double rtt = Math.max(0.0, (double) (rxTime - sendTime));
+        Long sentAtNanos = sendNanos.remove(seq);
+        double rtt = (sentAtNanos != null && rxNanos != -1L)
+                ? Math.max(0.0, (rxNanos - sentAtNanos) / 1_000_000.0)
+                : Math.max(0.0, (double) (rxTime - sendTime));
         totalProbesReceived.incrementAndGet();
         recordWindowOutcome(true);
 
@@ -369,6 +386,7 @@ public class NetworkProbeClient implements Runnable {
                 rxThread.interrupt();
             }
             inFlightProbes.clear();
+            sendNanos.clear();
             LOGGER.info("[" + nodeId + "] NetworkProbeClient stopped.");
         }
     }

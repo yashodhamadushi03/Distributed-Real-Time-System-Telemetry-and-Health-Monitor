@@ -2,6 +2,7 @@ package com.pulsenet.simulation;
 
 import com.pulsenet.agent.MetricCollector;
 import com.pulsenet.agent.TelemetryAgent;
+import com.pulsenet.common.cli.CliArgs;
 import com.pulsenet.common.model.TelemetryPayload;
 
 import java.util.*;
@@ -28,7 +29,7 @@ public class MockCluster {
     public static final String DEFAULT_PREFIX = "agent-";
 
     private final List<TelemetryAgent> activeAgents = new CopyOnWriteArrayList<>();
-    private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
+    private ScheduledExecutorService chaosScheduler;
 
     public MockCluster(String host, int port, int nodeCount, long intervalMillis, boolean chaosEnabled) {
         this(host, port, nodeCount, intervalMillis, chaosEnabled, DEFAULT_PREFIX);
@@ -56,9 +57,13 @@ public class MockCluster {
     }
 
     /**
-     * Starts all simulated agents and schedules chaos events if enabled.
+     * Starts all simulated agents and schedules chaos events if enabled. Does nothing if the cluster
+     * is already running; a stopped cluster can be started again.
      */
     public synchronized void start() {
+        if (!activeAgents.isEmpty()) {
+            return;
+        }
         LOGGER.info(String.format("Spawning mock cluster with %d nodes targeting %s:%d...",
                 nodeCount, host, port));
 
@@ -68,6 +73,8 @@ public class MockCluster {
             TelemetryAgent agent = new TelemetryAgent(host, port, nodeId, intervalMillis, collector);
             agent.setInitialBackoffMillis(500);
             agent.setMaxBackoffMillis(3000);
+            // Simulated nodes share one machine: N copies of the same Internet check tell nothing.
+            agent.setInternetMonitoringEnabled(false);
             activeAgents.add(agent);
             agent.start();
         }
@@ -78,7 +85,12 @@ public class MockCluster {
             // Chaos scenario: Stop <prefix>03 after 10 seconds to showcase Watchdog timeout detection
             String chaosTarget = getChaosTargetId();
             LOGGER.info("Chaos Mode ENABLED: Scheduled abrupt shutdown of " + chaosTarget + " in 10 seconds.");
-            scheduler.schedule(() -> {
+            chaosScheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "MockCluster-Chaos");
+                t.setDaemon(true);
+                return t;
+            });
+            chaosScheduler.schedule(() -> {
                 for (TelemetryAgent agent : activeAgents) {
                     if (chaosTarget.equals(agent.getNodeId())) {
                         LOGGER.warning(">>> CHAOS INJECTION: Abruptly terminating " + chaosTarget + " socket! <<<");
@@ -95,7 +107,10 @@ public class MockCluster {
      */
     public synchronized void stop() {
         LOGGER.info("Stopping mock cluster...");
-        scheduler.shutdownNow();
+        if (chaosScheduler != null) {
+            chaosScheduler.shutdownNow();
+            chaosScheduler = null;
+        }
         for (TelemetryAgent agent : activeAgents) {
             agent.stop();
         }
@@ -139,6 +154,7 @@ public class MockCluster {
         private long tick = 0;
 
         public SyntheticMetricCollector(String nodeId, int seedIndex) {
+            super(false); // no hardware access needed
             this.nodeId = nodeId;
             this.seedIndex = seedIndex;
         }
@@ -183,22 +199,22 @@ public class MockCluster {
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--host":
-                    if (i + 1 < args.length) host = args[++i];
+                    host = CliArgs.text(args, i++);
                     break;
                 case "--port":
-                    if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
+                    port = CliArgs.port(args, i++);
                     break;
                 case "--nodes":
-                    if (i + 1 < args.length) nodes = Integer.parseInt(args[++i]);
+                    nodes = (int) CliArgs.number(args, i++, 1, 200);
                     break;
                 case "--interval":
-                    if (i + 1 < args.length) intervalMillis = Long.parseLong(args[++i]);
+                    intervalMillis = CliArgs.number(args, i++, 100, 3_600_000);
                     break;
                 case "--duration":
-                    if (i + 1 < args.length) durationSeconds = Integer.parseInt(args[++i]);
+                    durationSeconds = (int) CliArgs.number(args, i++, 1, Integer.MAX_VALUE);
                     break;
                 case "--prefix":
-                    if (i + 1 < args.length) prefix = args[++i];
+                    prefix = CliArgs.text(args, i++);
                     break;
                 case "--no-chaos":
                     chaos = false;

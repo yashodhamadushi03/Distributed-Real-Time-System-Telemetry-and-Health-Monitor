@@ -135,4 +135,30 @@ class WireProtocolTest {
         ByteArrayInputStream in = new ByteArrayInputStream(giantHeader);
         assertThrows(IOException.class, () -> WireProtocol.receiveFramedMessage(in));
     }
+
+    @org.junit.jupiter.api.Test
+    void largeFrameIsReadInGrowingChunks() throws Exception {
+        String text = "x".repeat(300_000);
+        java.io.InputStream in = new java.io.ByteArrayInputStream(WireProtocol.packMessage(text));
+        org.junit.jupiter.api.Assertions.assertEquals(text, WireProtocol.receiveFramedMessage(in));
+    }
+
+    @org.junit.jupiter.api.Test
+    void announcedLengthDoesNotAllocateUntilDataArrives() throws Exception {
+        int[] largest = {0};
+        java.io.InputStream in = new java.io.InputStream() {
+            @Override
+            public int read() {
+                return -1;
+            }
+
+            @Override
+            public int read(byte[] b, int off, int len) {
+                largest[0] = Math.max(largest[0], b.length);
+                return -1;
+            }
+        };
+        org.junit.jupiter.api.Assertions.assertNull(WireProtocol.readExact(in, WireProtocol.MAX_FRAME_LENGTH));
+        org.junit.jupiter.api.Assertions.assertTrue(largest[0] <= WireProtocol.INITIAL_BUFFER_LENGTH);
+    }
 }

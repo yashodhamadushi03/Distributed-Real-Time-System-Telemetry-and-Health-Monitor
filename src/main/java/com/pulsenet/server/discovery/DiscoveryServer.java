@@ -6,6 +6,7 @@ import com.pulsenet.common.net.NetworkUtils;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.SocketException;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -36,7 +37,7 @@ public class DiscoveryServer implements Runnable {
     private final String serverId;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private DatagramSocket socket;
+    private volatile DatagramSocket socket;
     private Thread listenerThread;
 
     /**
@@ -89,13 +90,20 @@ public class DiscoveryServer implements Runnable {
      * @throws SocketException if socket binding fails
      */
     public synchronized void start() throws SocketException {
-        if (running.compareAndSet(false, true)) {
+        if (!running.get()) {
             // Bind to UDP port
             InetSocketAddress bindAddress = new InetSocketAddress(bindHost, udpPort);
-            socket = new DatagramSocket(null);
-            socket.setReuseAddress(true);
-            socket.setBroadcast(true);
-            socket.bind(bindAddress);
+            DatagramSocket newSocket = new DatagramSocket(null);
+            try {
+                newSocket.setReuseAddress(true);
+                newSocket.setBroadcast(true);
+                newSocket.bind(bindAddress);
+            } catch (SocketException | RuntimeException e) {
+                newSocket.close();
+                throw e;
+            }
+            socket = newSocket;
+            running.set(true);
 
             listenerThread = new Thread(this, "DiscoveryServer-UDP-" + udpPort);
             listenerThread.setDaemon(true);
@@ -110,6 +118,7 @@ public class DiscoveryServer implements Runnable {
     public void run() {
         byte[] buffer = new byte[MAX_DATAGRAM_SIZE];
 
+        final DatagramSocket socket = this.socket;
         while (running.get() && socket != null && !socket.isClosed()) {
             try {
                 DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
@@ -118,7 +127,7 @@ public class DiscoveryServer implements Runnable {
                 handlePacket(packet);
 
             } catch (SocketException e) {
-                if (!running.get()) {
+                if (!running.get() || socket.isClosed()) {
                     LOGGER.info("DiscoveryServer socket closed cleanly.");
                     break;
                 }
@@ -148,7 +157,7 @@ public class DiscoveryServer implements Runnable {
                 return;
             }
 
-            String advertisedHost = resolveAdvertisedHost();
+            String advertisedHost = resolveAdvertisedHost(packet.getAddress());
             DiscoveryMessage response = DiscoveryMessage.createResponse(serverId, advertisedHost, tcpPort, udpProbePort);
             byte[] responseBytes = response.toBytes();
 
@@ -174,6 +183,30 @@ public class DiscoveryServer implements Runnable {
      */
     public String resolveAdvertisedHost() {
         return NetworkUtils.advertisedHost(tcpBindHost);
+    }
+
+    /**
+     * Determines the address a specific client should connect to. A server listening on all
+     * interfaces advertises the local address the OS would use to reach that client, so a laptop
+     * with several networks (e.g. Wi-Fi plus its own hotspot) never hands out an address from the
+     * wrong one.
+     *
+     * @param client address the discovery request came from
+     * @return address reachable from {@code client}
+     */
+    String resolveAdvertisedHost(InetAddress client) {
+        if (client != null && NetworkUtils.isWildcard(tcpBindHost)) {
+            try (DatagramSocket route = new DatagramSocket()) {
+                route.connect(client, udpPort); // selects a route; sends nothing
+                InetAddress local = route.getLocalAddress();
+                if (local != null && !local.isAnyLocalAddress()) {
+                    return local.getHostAddress();
+                }
+            } catch (Exception e) {
+                LOGGER.fine("No route lookup for " + client + ": " + e.getMessage());
+            }
+        }
+        return resolveAdvertisedHost();
     }
 
     /**

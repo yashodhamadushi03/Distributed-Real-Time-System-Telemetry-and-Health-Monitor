@@ -22,6 +22,7 @@ Each script ships in three flavours:
 
 Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
 * `java -jar pulsenet.jar server [--port 9000] [--udp-port 9001] [--probe-port 9002]`
+* `java -jar pulsenet.jar ui` (graphical server; use instead of `server`, not together with it)
 * `java -jar pulsenet.jar agent --discover [--node-id <id>]`
 * `java -jar pulsenet.jar agent --host <ip> --port 9000 [--node-id <id>]`
 * `java -jar pulsenet.jar cluster --host <ip> --nodes 5`
@@ -44,11 +45,11 @@ Anything else is a direct `java -jar pulsenet.jar <subcommand>` call:
 scripts/package-demo.sh
 ```
 
-This runs `mvn clean package` (all 71 unit and integration tests) and assembles `dist/pulsenet-demo/`:
+This runs `mvn clean package` (all unit and integration tests) and assembles `dist/pulsenet-demo/`:
 
 ```
 pulsenet-demo/
-  pulsenet.jar        (self-contained shaded JAR, ~2.3 MB)
+  pulsenet.jar        (self-contained shaded JAR, ~16 MB)
   DEMO.md             (this runbook)
   scripts/            (start-server, start-agent, probe, helpers)
 ```
@@ -71,6 +72,7 @@ Laptop A can run straight from the repository or from the same folder.
      New-NetFirewallRule -DisplayName "PulseNet UDP 9001" -Direction Inbound -Protocol UDP -LocalPort 9001 -Action Allow
      New-NetFirewallRule -DisplayName "PulseNet UDP 9002" -Direction Inbound -Protocol UDP -LocalPort 9002 -Action Allow
      ```
+     or run `scripts\open-firewall.ps1` as Administrator.
   3. If Windows displays a "Windows Defender Firewall has blocked some features of Java" prompt, allow access on **Private networks**.
 * **Laptop A on macOS:** System Settings $\to$ Network $\to$ Firewall $\to$ Options $\to$ allow incoming connections for `java`. Linux: `sudo ufw allow 9000/tcp && sudo ufw allow 9001/udp && sudo ufw allow 9002/udp`.
 * **All laptops:** Disable sleep on lid close and power-saving on Wi-Fi adapters during the presentation.
@@ -115,7 +117,7 @@ Laptop A can run straight from the repository or from the same folder.
 | `No PulseNet server found after 3 attempts` | Firewall on Laptop A blocked UDP 9001, or client isolation | Ensure Laptop A has allowed UDP 9001. Ensure both laptops are on the same hotspot. |
 | `probe` reports `TIMEOUT` | Firewall on Laptop A or wrong IP | Run `probe.bat <A_IP>` to test TCP port 9000. Check Windows Defender Firewall profile is Private. |
 | `REFUSED: host reachable but nothing listening` | Server is not currently running | Run `start-server` on Laptop A. |
-| Agent connects but displays duplicate row | Hostnames identical on both laptops | Run agent with explicit ID: `start-agent.bat --discover node-b` |
+| Node appears as `name` and `name (2)` | Two agents use the same node ID (e.g. identical hostnames) | Run agent with explicit ID: `start-agent.bat --discover node-b` |
 
 ---
 

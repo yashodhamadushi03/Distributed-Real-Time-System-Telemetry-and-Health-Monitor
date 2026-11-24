@@ -1,5 +1,6 @@
 package com.pulsenet;
 
+import com.pulsenet.common.cli.CliArgs;
 import com.pulsenet.agent.AgentMain;
 import com.pulsenet.server.ServerMain;
 import com.pulsenet.simulation.MockCluster;
@@ -103,8 +104,14 @@ public final class Launcher {
             return EXIT_USAGE;
         }
 
-        subcommand.entryPoint().accept(Arrays.copyOfRange(args, 1, args.length));
-        return EXIT_OK;
+        try {
+            subcommand.entryPoint().accept(Arrays.copyOfRange(args, 1, args.length));
+            return EXIT_OK;
+        } catch (CliArgs.UsageException e) {
+            err.println("Error: " + e.getMessage());
+            err.println("Run 'java -jar pulsenet.jar " + command + " --help' for its options.");
+            return EXIT_USAGE;
+        }
     }
 
     /**

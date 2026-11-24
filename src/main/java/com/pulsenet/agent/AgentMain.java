@@ -1,5 +1,6 @@
 package com.pulsenet.agent;
 
+import com.pulsenet.common.cli.CliArgs;
 import com.pulsenet.agent.discovery.DiscoveryClient;
 
 import java.net.InetAddress;
@@ -26,6 +27,7 @@ public class AgentMain {
         boolean discover = false;
         int udpPort = DiscoveryClient.DEFAULT_UDP_PORT;
         int probePort = 9002;
+        boolean probePortExplicitlySet = false;
         String preferredServerId = null;
         boolean hostExplicitlySet = false;
         String dnsHost = null;
@@ -39,36 +41,35 @@ public class AgentMain {
                     discover = true;
                     break;
                 case "--udp-port":
-                    if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    udpPort = CliArgs.port(args, i++);
                     break;
                 case "--probe-port":
                 case "--udp-probe-port":
-                    if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
+                    probePort = CliArgs.port(args, i++);
+                    probePortExplicitlySet = true;
                     break;
                 case "--dns-host":
-                    if (i + 1 < args.length) dnsHost = args[++i];
+                    dnsHost = CliArgs.text(args, i++);
                     break;
                 case "--https-endpoint":
                 case "--https-url":
-                    if (i + 1 < args.length) httpsEndpoint = args[++i];
+                    httpsEndpoint = CliArgs.text(args, i++);
                     break;
                 case "--server-id":
-                    if (i + 1 < args.length) preferredServerId = args[++i];
+                    preferredServerId = CliArgs.text(args, i++);
                     break;
                 case "--host":
-                    if (i + 1 < args.length) {
-                        host = args[++i];
-                        hostExplicitlySet = true;
-                    }
+                    host = CliArgs.text(args, i++);
+                    hostExplicitlySet = true;
                     break;
                 case "--port":
-                    if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
+                    port = CliArgs.port(args, i++);
                     break;
                 case "--node-id":
-                    if (i + 1 < args.length) nodeId = args[++i];
+                    nodeId = CliArgs.text(args, i++);
                     break;
                 case "--interval":
-                    if (i + 1 < args.length) intervalMillis = Long.parseLong(args[++i]);
+                    intervalMillis = CliArgs.number(args, i++, 100, 3_600_000);
                     break;
                 case "--help":
                 case "-h":
@@ -78,6 +79,15 @@ public class AgentMain {
                     LOGGER.warning("Unknown argument: " + args[i]);
             }
         }
+
+        if (intervalMillis >= SLOW_INTERVAL_MILLIS) {
+            System.err.println("[WARN] --interval " + intervalMillis + " ms is close to or above the server's default "
+                    + "5 s watchdog; the node may keep switching between OFFLINE and online.");
+        }
+
+        // Re-check names often enough for the Internet monitor to notice DNS changes.
+        java.security.Security.setProperty("networkaddress.cache.ttl", "2");
+        java.security.Security.setProperty("networkaddress.cache.negative.ttl", "1");
 
         TelemetryAgent agent;
         if (discover) {
@@ -98,7 +108,7 @@ public class AgentMain {
                         selectedServerId = target.serverId();
                         selectedHost = target.resolveConnectHost();
                         selectedPort = target.tcpPort();
-                        if (target.udpProbePort() > 0) {
+                        if (!probePortExplicitlySet && target.udpProbePort() > 0) {
                             probePort = target.udpProbePort();
                         }
                         break;
@@ -120,7 +130,7 @@ public class AgentMain {
                                     System.out.print("Enter server port (default 9000): ");
                                     if (sc.hasNextLine()) {
                                         String pStr = sc.nextLine().trim();
-                                        selectedPort = pStr.isBlank() ? 9000 : Integer.parseInt(pStr);
+                                        selectedPort = parsePortOrDefault(pStr, 9000);
                                     }
                                     break;
                                 } else if ("3".equals(choice) || "q".equalsIgnoreCase(choice)) {
@@ -152,6 +162,9 @@ public class AgentMain {
         }
 
         agent.setProbePort(probePort);
+        if (probePortExplicitlySet) {
+            agent.setFollowDiscoveredProbePort(false);
+        }
         if (dnsHost != null && agent.getInternetMonitor() != null) {
             agent.getInternetMonitor().setDnsTestHost(dnsHost);
         }
@@ -177,6 +190,27 @@ public class AgentMain {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /** Intervals from here on risk tripping the server's default 5 s watchdog. */
+    static final long SLOW_INTERVAL_MILLIS = 4_000L;
+
+    /**
+     * @return the port typed by the operator, or {@code defaultPort} when blank or not a valid port
+     */
+    static int parsePortOrDefault(String text, int defaultPort) {
+        try {
+            int port = Integer.parseInt(text.trim());
+            if (port >= 1 && port <= 65_535) {
+                return port;
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through
+        }
+        if (!text.isBlank()) {
+            System.out.println("'" + text + "' is not a valid port; using " + defaultPort + ".");
+        }
+        return defaultPort;
     }
 
     /** Fallback ID used only when no hostname can be determined at all. */

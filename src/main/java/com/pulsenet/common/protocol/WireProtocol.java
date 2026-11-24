@@ -9,6 +9,7 @@ import java.io.OutputStream;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 
 /**
  * Deterministic length-prefixed binary wire protocol for framing TCP stream payloads.
@@ -20,6 +21,12 @@ public class WireProtocol {
      * Defensive sanity boundary to prevent OOM attacks or corrupted headers (10 MB).
      */
     public static final int MAX_FRAME_LENGTH = 10 * 1024 * 1024;
+
+    /**
+     * Largest buffer allocated before any payload byte has arrived. Bigger frames grow as data is
+     * received, so a peer that only announces a huge length cannot exhaust the heap.
+     */
+    static final int INITIAL_BUFFER_LENGTH = 64 * 1024;
 
     /**
      * Serializes a TelemetryPayload and packs it into a length-prefixed byte array.
@@ -72,10 +79,13 @@ public class WireProtocol {
      * @throws IOException on socket read failure.
      */
     public static byte[] readExact(InputStream in, int numBytes) throws IOException {
-        byte[] buffer = new byte[numBytes];
+        byte[] buffer = new byte[Math.min(numBytes, INITIAL_BUFFER_LENGTH)];
         int totalRead = 0;
         while (totalRead < numBytes) {
-            int read = in.read(buffer, totalRead, numBytes - totalRead);
+            if (totalRead == buffer.length) {
+                buffer = Arrays.copyOf(buffer, (int) Math.min((long) numBytes, buffer.length * 2L));
+            }
+            int read = in.read(buffer, totalRead, buffer.length - totalRead);
             if (read == -1) {
                 // Stream closed prematurely (EOF)
                 return null;

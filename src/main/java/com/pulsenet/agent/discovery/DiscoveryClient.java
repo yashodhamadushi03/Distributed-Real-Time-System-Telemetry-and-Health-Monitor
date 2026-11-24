@@ -135,6 +135,8 @@ public class DiscoveryClient {
                     System.out.println("[DISCOVERY] Discovery completed successfully.");
                     return Optional.of(chosen);
                 }
+                System.out.println("[DISCOVERY] No server selected.");
+                return Optional.empty();
             }
 
             if (attempt < maxAttempts && retryDelayMillis > 0) {
@@ -215,11 +217,18 @@ public class DiscoveryClient {
                         );
                         String resolvedHost = server.resolveConnectHost();
                         if (resolvedHost != null && !resolvedHost.isBlank()) {
-                            responses.put(server.serverId(), server);
+                            DiscoveredServer known = responses.get(server.serverId());
+                            // A server on this machine answers on several addresses; keep the best one.
+                            if (known == null || reachabilityRank(server) > reachabilityRank(known)) {
+                                responses.put(server.serverId(), server);
+                            }
                         }
                     } else {
                         LOGGER.fine("Received non-conforming discovery response from " + rxPacket.getSocketAddress());
                     }
+                } catch (PortUnreachableException | com.fasterxml.jackson.core.JacksonException
+                         | IllegalArgumentException e) {
+                    LOGGER.fine("Ignored unusable discovery reply: " + e.getMessage());
                 } catch (SocketTimeoutException e) {
                     // Timeout slice expired; continue until deadline
                 }
@@ -232,6 +241,19 @@ public class DiscoveryClient {
         }
 
         return new ArrayList<>(responses.values());
+    }
+
+    /**
+     * Ranks replies from one server: a LAN reply beats a loopback reply, except when the server
+     * itself says it only listens on loopback, where the LAN address would refuse the connection.
+     */
+    private static int reachabilityRank(DiscoveredServer server) {
+        if (server.responseAddress().isLoopbackAddress()) {
+            return 1;
+        }
+        String host = server.tcpHost();
+        boolean loopbackOnly = host != null && (host.startsWith("127.") || "localhost".equalsIgnoreCase(host));
+        return loopbackOnly ? 0 : 2;
     }
 
     /**

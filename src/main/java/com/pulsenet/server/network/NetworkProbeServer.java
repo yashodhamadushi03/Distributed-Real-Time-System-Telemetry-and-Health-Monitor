@@ -32,7 +32,7 @@ public class NetworkProbeServer implements Runnable {
     private final int probePort;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    private DatagramSocket socket;
+    private volatile DatagramSocket socket;
     private Thread listenerThread;
 
     public NetworkProbeServer() {
@@ -57,11 +57,18 @@ public class NetworkProbeServer implements Runnable {
      * @throws SocketException if socket binding fails
      */
     public synchronized void start() throws SocketException {
-        if (running.compareAndSet(false, true)) {
+        if (!running.get()) {
             InetSocketAddress bindAddress = new InetSocketAddress(bindHost, probePort);
-            socket = new DatagramSocket(null);
-            socket.setReuseAddress(true);
-            socket.bind(bindAddress);
+            DatagramSocket newSocket = new DatagramSocket(null);
+            try {
+                newSocket.setReuseAddress(true);
+                newSocket.bind(bindAddress);
+            } catch (SocketException | RuntimeException e) {
+                newSocket.close();
+                throw e;
+            }
+            socket = newSocket;
+            running.set(true);
 
             listenerThread = new Thread(this, "NetworkProbeServer-UDP-" + getProbePort());
             listenerThread.setDaemon(true);
@@ -75,6 +82,7 @@ public class NetworkProbeServer implements Runnable {
     public void run() {
         byte[] buffer = new byte[MAX_BUFFER_SIZE];
 
+        final DatagramSocket socket = this.socket;
         while (running.get() && socket != null && !socket.isClosed()) {
             try {
                 DatagramPacket rxPacket = new DatagramPacket(buffer, buffer.length);
@@ -98,7 +106,7 @@ public class NetworkProbeServer implements Runnable {
                 }
 
             } catch (SocketException e) {
-                if (!running.get()) {
+                if (!running.get() || socket.isClosed()) {
                     LOGGER.info("NetworkProbeServer socket closed cleanly.");
                     break;
                 }

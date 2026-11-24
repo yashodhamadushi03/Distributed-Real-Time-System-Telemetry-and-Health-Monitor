@@ -5,12 +5,14 @@ import com.pulsenet.common.model.NetworkMetrics;
 import com.pulsenet.common.model.TelemetryPayload;
 import com.pulsenet.common.net.NetworkUtils;
 import com.pulsenet.common.net.NetworkUtils.LanAddress;
+import com.pulsenet.server.ServerMain;
 import com.pulsenet.server.discovery.DiscoveryServer;
 import com.pulsenet.server.network.NetworkProbeServer;
 import com.pulsenet.server.network.TelemetryServer;
 import com.pulsenet.server.registry.NodeRecord;
 import com.pulsenet.server.registry.NodeRegistry;
 import com.pulsenet.server.watchdog.WatchdogSupervisor;
+import com.pulsenet.ui.NodeHistory.Metric;
 
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
@@ -18,6 +20,7 @@ import javafx.application.Application;
 import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.chart.LineChart;
 import javafx.scene.chart.NumberAxis;
@@ -25,8 +28,10 @@ import javafx.scene.chart.XYChart;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.Labeled;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
+import javafx.scene.control.Tooltip;
 import javafx.scene.layout.*;
 import javafx.scene.paint.Color;
 import javafx.scene.shape.Circle;
@@ -37,6 +42,9 @@ import javafx.util.Duration;
 
 import java.io.IOException;
 import java.util.*;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -71,13 +79,6 @@ public class PulseNetApp extends Application {
 
     private static final Logger LOG = Logger.getLogger(PulseNetApp.class.getName());
 
-    public static final String DEFAULT_HOST = "0.0.0.0";
-    public static final int DEFAULT_TCP_PORT = 9000;
-    public static final int DEFAULT_UDP_DISCOVERY_PORT = 9001;
-    public static final int DEFAULT_UDP_PROBE_PORT = 9002;
-    public static final double DEFAULT_WATCHDOG_TIMEOUT = 15.0;
-    private static final int MAX_CHART_HISTORY = 45;
-
     // High-contrast, crystal-clear NOC color palette
     private static final String BG_COLOR = "#0A0E17";
     private static final String SIDEBAR_COLOR = "#0D131F";
@@ -95,10 +96,7 @@ public class PulseNetApp extends Application {
     private static final String PURPLE_ACCENT = "#C084FC";
     private static final String ORANGE_ACCENT = "#FF9100";
 
-    private int tcpPort = DEFAULT_TCP_PORT;
-    private int udpDiscoveryPort = DEFAULT_UDP_DISCOVERY_PORT;
-    private int udpProbePort = DEFAULT_UDP_PROBE_PORT;
-    private String serverId = "pulsenet-noc-server";
+    private UiOptions options;
 
     private NodeRegistry registry;
     private TelemetryServer server;
@@ -107,15 +105,26 @@ public class PulseNetApp extends Application {
     private WatchdogSupervisor watchdog;
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
+    /** Enumerating adapters can take a while, so it happens in the background. */
+    private volatile List<LanAddress> lanAddresses = List.of();
+    private ScheduledExecutorService lanScanner;
+
+    private ScrollPane scrollPane;
     private VBox contentArea;
     private Label pageTitle;
     private Label pageSubtitle;
+    private Label serverChipText;
+    private Label serverChipDot;
     private Label serverOnlineBadge;
     private Timeline refreshTimeline;
-    private String currentPage = "Overview";
-    private final List<Button> navButtons = new ArrayList<>();
+    private Page currentPage = Page.OVERVIEW;
+    private final Map<Page, Button> navButtons = new EnumMap<>(Page.class);
     private String selectedNodeId = null;
     private String alertFilter = "ALL";
+
+    private enum Page {
+        OVERVIEW, NODES, NODE_DETAILS, NETWORK_FLEET, DIAGNOSTICS, TOPOLOGY, INTERNET, ALERTS, CAPACITY, SLA, SETTINGS
+    }
 
     // Overview KPIs
     private Label upValue, downValue, avgRttValue, avgJitterValue, packetLossValue, internetStatusValue;
@@ -123,104 +132,69 @@ public class PulseNetApp extends Application {
     private Circle networkArc, cpuArc, memoryArc, diskArc;
     private Label batteryVal, batteryFootVal, downloadSpeedVal, uploadSpeedVal;
     private VBox inventoryBoxList, eventFeedBox;
+    private TrendChart hostLoadChart, latencyChart, throughputChart;
 
-    // Overview Trend Charts (Graphs)
-    private LineChart<Number, Number> hostLoadChart;
-    private LineChart<Number, Number> latencyChart;
-    private LineChart<Number, Number> throughputChart;
-    private XYChart.Series<Number, Number> cpuSeries;
-    private XYChart.Series<Number, Number> memorySeries;
-    private XYChart.Series<Number, Number> rttSeries;
-    private XYChart.Series<Number, Number> jitterSeries;
-    private XYChart.Series<Number, Number> downloadSeries;
-    private XYChart.Series<Number, Number> uploadSeries;
+    // Node details
+    private VBox detailInfoBox, detailProbeBox;
+    private TrendChart detailCpuChart, detailMemChart, detailThroughputChart, detailLatencyChart;
 
-    // Continuous History Buffers for Overview Graphs (persists across navigation)
-    private final List<Double> cpuHistory = new ArrayList<>();
-    private final List<Double> memHistory = new ArrayList<>();
-    private final List<Double> rttHistory = new ArrayList<>();
-    private final List<Double> jitterHistory = new ArrayList<>();
-    private final List<Double> downloadHistory = new ArrayList<>();
-    private final List<Double> uploadHistory = new ArrayList<>();
+    // Topology
+    private Pane topologyPane;
+    private String topologySignature = "";
 
-    // Drill-Down Node Charts
-    private LineChart<Number, Number> detailCpuChart;
-    private LineChart<Number, Number> detailMemChart;
-    private LineChart<Number, Number> detailThroughputChart;
-    private LineChart<Number, Number> detailLatencyChart;
-    private XYChart.Series<Number, Number> detailCpuSeries;
-    private XYChart.Series<Number, Number> detailMemSeries;
-    private XYChart.Series<Number, Number> detailDownloadSeries;
-    private XYChart.Series<Number, Number> detailUploadSeries;
-    private XYChart.Series<Number, Number> detailRttSeries;
-    private XYChart.Series<Number, Number> detailJitterSeries;
-
-    // Continuous History Buffers for Drill-Down Node Charts
-    private final List<Double> detailCpuHistory = new ArrayList<>();
-    private final List<Double> detailMemHistory = new ArrayList<>();
-    private final List<Double> detailDownloadHistory = new ArrayList<>();
-    private final List<Double> detailUploadHistory = new ArrayList<>();
-    private final List<Double> detailRttHistory = new ArrayList<>();
-    private final List<Double> detailJitterHistory = new ArrayList<>();
+    // One-per-second samples, recorded whichever page is open
+    private final NodeHistory fleetHistory = new NodeHistory();
+    private final Map<String, NodeHistory> nodeHistories = new HashMap<>();
 
     @Override
     public void init() {
         Parameters params = getParameters();
-        if (params != null) {
-            List<String> raw = params.getRaw();
-            for (int i = 0; i < raw.size(); i++) {
-                String arg = raw.get(i);
-                if ("--port".equals(arg) && i + 1 < raw.size()) {
-                    try {
-                        tcpPort = Integer.parseInt(raw.get(++i));
-                    } catch (Exception ignored) {
-                    }
-                } else if ("--udp-port".equals(arg) && i + 1 < raw.size()) {
-                    try {
-                        udpDiscoveryPort = Integer.parseInt(raw.get(++i));
-                    } catch (Exception ignored) {
-                    }
-                } else if (("--probe-port".equals(arg) || "--udp-probe-port".equals(arg)) && i + 1 < raw.size()) {
-                    try {
-                        udpProbePort = Integer.parseInt(raw.get(++i));
-                    } catch (Exception ignored) {
-                    }
-                } else if ("--server-id".equals(arg) && i + 1 < raw.size()) {
-                    serverId = raw.get(++i);
-                }
-            }
-        }
+        options = UiOptions.parse(params != null ? params.getRaw().toArray(new String[0]) : new String[0]);
     }
 
     @Override
     public void start(Stage stage) {
         registry = new NodeRegistry();
 
-        // 1. Initialize core server listeners
-        server = new TelemetryServer(DEFAULT_HOST, tcpPort, registry);
-        discoveryServer = new DiscoveryServer(DEFAULT_HOST, udpDiscoveryPort, DEFAULT_HOST, tcpPort, udpProbePort,
-                serverId);
-        probeServer = new NetworkProbeServer(DEFAULT_HOST, udpProbePort);
-        watchdog = new WatchdogSupervisor(registry, DEFAULT_WATCHDOG_TIMEOUT);
+        long readTimeoutMillis = ServerMain.resolveReadTimeoutMillis(-1, options.watchdogTimeout());
+        server = new TelemetryServer(options.host(), options.tcpPort(), registry, readTimeoutMillis);
+        discoveryServer = new DiscoveryServer("0.0.0.0", options.discoveryPort(), options.host(), options.tcpPort(),
+                options.probePort(), options.serverId());
+        probeServer = new NetworkProbeServer("0.0.0.0", options.probePort());
+        watchdog = new WatchdogSupervisor(registry, options.watchdogTimeout());
 
         try {
             server.start();
-            discoveryServer.start();
-            probeServer.start();
-            watchdog.start();
-            LOG.info(String.format("PulseNet Unified NOC Servers active: TCP %s:%d, UDP Discovery :%d, UDP Probe :%d",
-                    DEFAULT_HOST, tcpPort, udpDiscoveryPort, udpProbePort));
-        } catch (IOException ex) {
-            LOG.log(Level.SEVERE, "Could not start PulseNet servers", ex);
+        } catch (IOException | RuntimeException ex) {
+            LOG.log(Level.SEVERE, "Could not start the telemetry server", ex);
             Alert alert = new Alert(Alert.AlertType.ERROR);
             alert.setTitle("PulseNet Startup Error");
-            alert.setHeaderText("Failed to bind network listening ports");
-            alert.setContentText(String.format("TCP Port %d or UDP Ports %d/%d may already be in use.\n%s",
-                    tcpPort, udpDiscoveryPort, udpProbePort, ex.getMessage()));
+            alert.setHeaderText("Cannot listen on TCP port " + options.tcpPort());
+            alert.setContentText("Another PulseNet server may already be running on this computer. Close it, or start "
+                    + "this one with a different --port.\n\n" + ex.getMessage());
             alert.showAndWait();
             shutdown();
             return;
         }
+        watchdog.start();
+        // Agents can still connect by address without UDP, so these failures are reported, not fatal.
+        try {
+            discoveryServer.start();
+        } catch (Exception ex) {
+            reportUdpFailure("Discovery", options.discoveryPort(), "agents cannot find this server automatically", ex);
+        }
+        try {
+            probeServer.start();
+        } catch (Exception ex) {
+            reportUdpFailure("Probe", options.probePort(), "latency and packet loss cannot be measured", ex);
+        }
+
+        lanScanner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "PulseNet-LAN-Scanner");
+            t.setDaemon(true);
+            return t;
+        });
+        lanScanner.scheduleWithFixedDelay(this::scanLanAddresses, 0, 10, TimeUnit.SECONDS);
 
         BorderPane root = new BorderPane();
         root.setStyle("-fx-background-color:" + BG_COLOR + ";");
@@ -234,22 +208,19 @@ public class PulseNetApp extends Application {
         contentArea = new VBox(20);
         mainContainer.getChildren().add(contentArea);
 
-        ScrollPane scrollPane = new ScrollPane(mainContainer);
+        scrollPane = new ScrollPane(mainContainer);
         scrollPane.setFitToWidth(true);
-        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        scrollPane.setHbarPolicy(ScrollPane.ScrollBarPolicy.AS_NEEDED);
         scrollPane.setStyle(
                 "-fx-background:" + BG_COLOR + ";-fx-background-color:" + BG_COLOR + ";-fx-border-color:transparent;");
         root.setCenter(scrollPane);
 
-        showOverview();
+        showPage(Page.OVERVIEW);
 
         Scene scene = new Scene(root, 1420, 860);
-        try {
-            java.net.URL cssUrl = getClass().getResource("/css/pulsenet-dark.css");
-            if (cssUrl != null) {
-                scene.getStylesheets().add(cssUrl.toExternalForm());
-            }
-        } catch (Throwable ignored) {
+        java.net.URL cssUrl = getClass().getResource("/css/pulsenet-dark.css");
+        if (cssUrl != null) {
+            scene.getStylesheets().add(cssUrl.toExternalForm());
         }
         stage.setTitle("PulseNet | Network Operations Center & Real-Time Telemetry Monitor");
         stage.setScene(scene);
@@ -258,10 +229,172 @@ public class PulseNetApp extends Application {
         stage.show();
 
         // 1-second dynamic UI refresh timer
-        refreshTimeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> refreshCurrentView()));
+        refreshTimeline = new Timeline(new KeyFrame(Duration.seconds(1), e -> tick()));
         refreshTimeline.setCycleCount(Timeline.INDEFINITE);
         refreshTimeline.play();
-        refreshCurrentView();
+        tick();
+    }
+
+    private void reportUdpFailure(String service, int port, String consequence, Exception ex) {
+        LOG.log(Level.WARNING, service + " service could not listen on UDP port " + port, ex);
+        registry.logEvent(String.format("[FAIL] %s service could not use UDP port %d: %s (%s)",
+                service, port, consequence, ex.getMessage()));
+    }
+
+    private void scanLanAddresses() {
+        try {
+            lanAddresses = NetworkUtils.listLanIPv4Addresses();
+        } catch (RuntimeException ex) {
+            LOG.log(Level.FINE, "LAN address scan failed", ex);
+        }
+    }
+
+    // ================= REFRESH =================
+
+    /** Runs once per second on the JavaFX thread. */
+    private void tick() {
+        List<NodeRecord> nodes = registry.getAllNodes();
+        recordHistory(nodes);
+        refreshHeader();
+        refreshCurrentView(nodes);
+    }
+
+    private void recordHistory(List<NodeRecord> nodes) {
+        FleetSummary fleet = FleetSummary.of(nodes);
+        fleetHistory.add(Metric.CPU, fleet.cpu());
+        fleetHistory.add(Metric.MEMORY, fleet.memory());
+        fleetHistory.add(Metric.RTT, fleet.rtt());
+        fleetHistory.add(Metric.JITTER, fleet.jitter());
+        fleetHistory.add(Metric.DOWNLOAD, fleet.online() > 0 ? fleet.download() / 1000.0 : Double.NaN);
+        fleetHistory.add(Metric.UPLOAD, fleet.online() > 0 ? fleet.upload() / 1000.0 : Double.NaN);
+
+        for (NodeRecord node : nodes) {
+            NodeHistory history = nodeHistories.computeIfAbsent(node.getNodeId(), id -> new NodeHistory());
+            boolean offline = FleetSummary.isOffline(node);
+            history.addAvailability(!offline);
+            TelemetryPayload p = offline ? null : node.getLatestPayload();
+            NetworkMetrics net = offline ? null : node.getNetworkMetrics();
+            history.add(Metric.CPU, p != null ? p.getCpuPercent() : Double.NaN);
+            history.add(Metric.MEMORY, p != null ? p.getMemoryPercent() : Double.NaN);
+            history.add(Metric.DOWNLOAD, p != null ? p.getDownloadBytesPerSecond() / 1000.0 : Double.NaN);
+            history.add(Metric.UPLOAD, p != null ? p.getUploadBytesPerSecond() / 1000.0 : Double.NaN);
+            history.add(Metric.RTT, net != null && net.getCurrentRttMs() >= 0 ? net.getCurrentRttMs() : Double.NaN);
+            history.add(Metric.JITTER, net != null && net.getAvgJitterMs() >= 0 ? net.getAvgJitterMs() : Double.NaN);
+        }
+    }
+
+    private void refreshCurrentView(List<NodeRecord> nodes) {
+        switch (currentPage) {
+            case OVERVIEW -> refreshOverview(nodes);
+            case NODE_DETAILS -> refreshNodeDetails();
+            case TOPOLOGY -> refreshTopology(nodes);
+            case NODES -> patch(contentArea, buildServerFleet(nodes));
+            case NETWORK_FLEET -> patch(contentArea, buildNetworkFleet(nodes));
+            case DIAGNOSTICS -> patch(contentArea, buildDiagnostics(nodes));
+            case INTERNET -> patch(contentArea, buildInternetHealth(nodes));
+            case ALERTS -> patch(contentArea, buildAlerts());
+            case CAPACITY -> patch(contentArea, buildCapacity(nodes));
+            case SLA -> patch(contentArea, buildReports(nodes));
+            case SETTINGS -> patch(contentArea, buildSettings());
+        }
+    }
+
+    /**
+     * Opens a page from the top and fills it with current data.
+     */
+    private void showPage(Page page) {
+        currentPage = page;
+        Page navPage = page == Page.NODE_DETAILS ? Page.NODES : page;
+        navButtons.forEach((p, button) -> button.setStyle(getNavButtonStyle(p == navPage)));
+        contentArea.getChildren().clear();
+        scrollPane.setVvalue(0);
+
+        switch (page) {
+            case OVERVIEW -> {
+                updateHeading("System Overview",
+                        "Real-time distributed infrastructure monitoring & advanced network telemetry");
+                buildOverview();
+            }
+            case NODES -> updateHeading("Node Management", "View individual computer telemetry and hardware details");
+            case NODE_DETAILS -> {
+                updateHeading(selectedNodeId, "Live telemetry, hardware and network details of this node");
+                buildNodeDetails();
+            }
+            case NETWORK_FLEET -> updateHeading("Network Fleet",
+                    "RTT Latency, RFC 3550 Jitter, UDP Packet Loss, and Agent Probing");
+            case DIAGNOSTICS -> updateHeading("Network Diagnostics",
+                    "Fleet RTT Latency Rankings, Jitter Variance, and Packet Loss");
+            case TOPOLOGY -> {
+                updateHeading("Network Topology", "Interactive Aggregator Hub and Connected Agents Map");
+                buildTopology();
+            }
+            case INTERNET -> updateHeading("Internet & WAN Health",
+                    "Fleet-Wide Default Gateway, DNS Resolution, and External HTTPS");
+            case ALERTS -> updateHeading("Alerts & Audit Log",
+                    "Watchdog Events, Connection Failures, and System Notifications");
+            case CAPACITY -> updateHeading("Capacity Planning", "Aggregated Cluster Compute, RAM & Storage Headroom");
+            case SLA -> updateHeading("SLA & System Reports", "Measured availability & protocol specifications");
+            case SETTINGS -> updateHeading("Settings & Ports",
+                    "Server Configuration, Listening Endpoints & Local Interfaces");
+        }
+        refreshCurrentView(registry.getAllNodes());
+    }
+
+    private void showNodeDetails(String nodeId) {
+        selectedNodeId = nodeId;
+        showPage(Page.NODE_DETAILS);
+    }
+
+    /**
+     * Updates {@code target} to look like {@code fresh} while keeping the existing controls wherever
+     * the structure matches. Rebuilding them every second would reset the scroll position and lose
+     * clicks that are in progress.
+     */
+    private static void patch(Pane target, List<? extends Node> fresh) {
+        List<Node> replacement = new ArrayList<>(fresh);
+        List<Node> existing = target.getChildren();
+        for (int i = 0; i < replacement.size(); i++) {
+            Node wanted = replacement.get(i);
+            if (i >= existing.size()) {
+                existing.add(wanted);
+            } else if (!patchNode(existing.get(i), wanted)) {
+                existing.set(i, wanted);
+            }
+        }
+        if (existing.size() > replacement.size()) {
+            existing.subList(replacement.size(), existing.size()).clear();
+        }
+    }
+
+    /** @return false if {@code current} cannot be turned into {@code wanted} and must be replaced */
+    private static boolean patchNode(Node current, Node wanted) {
+        if (current.getClass() != wanted.getClass()) {
+            return false;
+        }
+        if (!Objects.equals(current.getStyle(), wanted.getStyle())) {
+            current.setStyle(wanted.getStyle());
+        }
+        if (current instanceof Labeled label) {
+            String text = ((Labeled) wanted).getText();
+            if (!Objects.equals(label.getText(), text)) {
+                label.setText(text);
+            }
+            label.setWrapText(((Labeled) wanted).isWrapText());
+            if (current instanceof Button button) {
+                button.setOnAction(((Button) wanted).getOnAction());
+            }
+            return true;
+        }
+        if (current instanceof Pane pane) {
+            pane.setPadding(((Pane) wanted).getPadding());
+            if (pane instanceof VBox box) {
+                box.setAlignment(((VBox) wanted).getAlignment());
+            } else if (pane instanceof HBox box) {
+                box.setAlignment(((HBox) wanted).getAlignment());
+            }
+            patch(pane, ((Pane) wanted).getChildren());
+        }
+        return true;
     }
 
     // ================= SIDEBAR NAVIGATION =================
@@ -285,16 +418,16 @@ public class PulseNetApp extends Application {
 
         box.getChildren().addAll(
                 brandBox,
-                createNavButton("◈", "Overview", this::showOverview),
-                createNavButton("▣", "Nodes (Server Fleet)", this::showServerFleet),
-                createNavButton("⌁", "Network Fleet", this::showNetworkFleet),
-                createNavButton("📈", "Diagnostics", this::showNetworkDiagnostics),
-                createNavButton("⌘", "Topology", this::showTopology),
-                createNavButton("🌐", "Internet & WAN", this::showInternetHealth),
-                createNavButton("⚠", "Alerts & Events", this::showAlerts),
-                createNavButton("▥", "Capacity Planning", this::showCapacity),
-                createNavButton("▧", "SLA Reports", this::showReports),
-                createNavButton("⚙", "Settings & Ports", this::showSettings));
+                createNavButton("◈", "Overview", Page.OVERVIEW),
+                createNavButton("▣", "Nodes (Server Fleet)", Page.NODES),
+                createNavButton("⌁", "Network Fleet", Page.NETWORK_FLEET),
+                createNavButton("📈", "Diagnostics", Page.DIAGNOSTICS),
+                createNavButton("⌘", "Topology", Page.TOPOLOGY),
+                createNavButton("🌐", "Internet & WAN", Page.INTERNET),
+                createNavButton("⚠", "Alerts & Events", Page.ALERTS),
+                createNavButton("▥", "Capacity Planning", Page.CAPACITY),
+                createNavButton("▧", "SLA Reports", Page.SLA),
+                createNavButton("⚙", "Settings & Ports", Page.SETTINGS));
 
         Region spacer = new Region();
         VBox.setVgrow(spacer, Priority.ALWAYS);
@@ -307,19 +440,15 @@ public class PulseNetApp extends Application {
         return box;
     }
 
-    private Button createNavButton(String icon, String text, Runnable action) {
+    private Button createNavButton(String icon, String text, Page page) {
         Button b = new Button(icon + "   " + text);
         b.setMaxWidth(Double.MAX_VALUE);
         b.setAlignment(Pos.CENTER_LEFT);
         b.setPadding(new Insets(10, 14, 10, 14));
+        b.setMnemonicParsing(false);
         b.setStyle(getNavButtonStyle(false));
-        b.setOnAction(e -> {
-            navButtons.forEach(btn -> btn.setStyle(getNavButtonStyle(btn == b)));
-            action.run();
-        });
-        navButtons.add(b);
-        if ("Overview".equals(text))
-            b.setStyle(getNavButtonStyle(true));
+        b.setOnAction(e -> showPage(page));
+        navButtons.put(page, b);
         return b;
     }
 
@@ -331,13 +460,6 @@ public class PulseNetApp extends Application {
                 ";-fx-border-width:0 0 0 3;-fx-border-radius:8;-fx-cursor:hand;";
     }
 
-    private void updateNavSelection(String name) {
-        for (Button btn : navButtons) {
-            boolean match = btn.getText().contains(name);
-            btn.setStyle(getNavButtonStyle(match));
-        }
-    }
-
     // ================= HEADER =================
 
     private HBox createHeader() {
@@ -347,55 +469,77 @@ public class PulseNetApp extends Application {
         pageSubtitle = new Label();
         pageSubtitle.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:12px;");
         titles.getChildren().addAll(pageTitle, pageSubtitle);
+        titles.setMinWidth(230);
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        // Server Chip showing listening ports
+        // Server chip: the address agents should connect to
         HBox serverChip = new HBox(8);
         serverChip.setAlignment(Pos.CENTER);
+        serverChip.setMinWidth(Region.USE_PREF_SIZE);
+        serverChip.setMaxHeight(Region.USE_PREF_SIZE);
         serverChip.setPadding(new Insets(8, 16, 8, 16));
         serverChip.setStyle("-fx-background-color:#072B28;-fx-border-color:" + GREEN_ACCENT
                 + ";-fx-border-radius:18;-fx-background-radius:18;-fx-border-width:1.5;");
-        Label dot = new Label("●");
-        dot.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:13px;");
-        Label srvText = new Label("SERVER RUNNING  (TCP :" + tcpPort + " | PROBE UDP :" + udpProbePort + ")");
-        srvText.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:11px;-fx-font-weight:bold;");
-        serverChip.getChildren().addAll(dot, srvText);
+        serverChipDot = new Label("●");
+        serverChipText = new Label();
+        serverChipText.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+        serverChip.getChildren().addAll(serverChipDot, serverChipText);
 
-        Button viewOverviewBtn = new Button("◈  OVERVIEW");
-        viewOverviewBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR
-                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
-        viewOverviewBtn.setOnAction(e -> {
-            updateNavSelection("Overview");
-            showOverview();
-        });
-
-        Button viewNodesBtn = new Button("▣  NODES");
-        viewNodesBtn.setStyle("-fx-background-color:#131C2D;-fx-border-color:" + BORDER_COLOR
-                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
-        viewNodesBtn.setOnAction(e -> {
-            updateNavSelection("Nodes");
-            showServerFleet();
-        });
-
-        Button viewFleetBtn = new Button("⌁  NETWORK FLEET");
-        viewFleetBtn.setStyle("-fx-background-color:" + BLUE_ACCENT
-                + ";-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
-        viewFleetBtn.setOnAction(e -> {
-            updateNavSelection("Network Fleet");
-            showNetworkFleet();
-        });
+        Button viewOverviewBtn = createHeaderButton("◈  OVERVIEW", "#131C2D", Page.OVERVIEW);
+        Button viewNodesBtn = createHeaderButton("▣  NODES", "#131C2D", Page.NODES);
+        Button viewFleetBtn = createHeaderButton("⌁  NETWORK FLEET", BLUE_ACCENT, Page.NETWORK_FLEET);
 
         serverOnlineBadge = new Label("● SERVER ONLINE");
+        serverOnlineBadge.setMinWidth(Region.USE_PREF_SIZE);
         serverOnlineBadge.setPadding(new Insets(8, 18, 8, 18));
-        serverOnlineBadge.setStyle(
-                "-fx-background-color:#064e3b;-fx-text-fill:#34d399;-fx-border-color:#059669;-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;");
 
         HBox h = new HBox(12, titles, spacer, serverChip, viewOverviewBtn, viewNodesBtn, viewFleetBtn,
                 serverOnlineBadge);
         h.setAlignment(Pos.CENTER_LEFT);
+        // On a narrow window the title needs the room; the sidebar offers the same pages
+        for (Button shortcut : List.of(viewOverviewBtn, viewNodesBtn, viewFleetBtn)) {
+            shortcut.visibleProperty().bind(h.widthProperty().greaterThan(1150));
+            shortcut.managedProperty().bind(shortcut.visibleProperty());
+        }
+        refreshHeader();
         return h;
+    }
+
+    private Button createHeaderButton(String text, String background, Page page) {
+        Button b = new Button(text);
+        b.setMinWidth(Region.USE_PREF_SIZE);
+        b.setStyle("-fx-background-color:" + background + ";-fx-border-color:" + BORDER_COLOR
+                + ";-fx-border-radius:18;-fx-text-fill:white;-fx-font-size:11px;-fx-font-weight:bold;-fx-background-radius:18;-fx-padding:8 14 8 14;-fx-cursor:hand;");
+        b.setOnAction(e -> showPage(page));
+        return b;
+    }
+
+    private void refreshHeader() {
+        boolean running = server.isRunning();
+        boolean degraded = running && !(discoveryServer.isRunning() && probeServer.isRunning());
+        serverChipText.setText("AGENTS CONNECT TO  " + connectAddress());
+        serverChipDot.setStyle("-fx-text-fill:" + (!running ? RED_ACCENT : degraded ? YELLOW_ACCENT : GREEN_ACCENT)
+                + ";-fx-font-size:13px;");
+        serverOnlineBadge.setText(!running ? "● SERVER OFFLINE" : degraded ? "● SERVER DEGRADED" : "● SERVER ONLINE");
+        String colors = !running
+                ? "-fx-background-color:#4c0519;-fx-text-fill:#fb7185;-fx-border-color:#e11d48;"
+                : degraded
+                ? "-fx-background-color:#422006;-fx-text-fill:#fde047;-fx-border-color:#ca8a04;"
+                : "-fx-background-color:#064e3b;-fx-text-fill:#34d399;-fx-border-color:#059669;";
+        serverOnlineBadge.setStyle(colors
+                + "-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;");
+    }
+
+    /** The address other laptops should use, falling back to loopback when there is no network. */
+    private String connectAddress() {
+        String host = options.host();
+        if (NetworkUtils.isWildcard(host)) {
+            List<LanAddress> addresses = lanAddresses;
+            host = addresses.isEmpty() ? "127.0.0.1" : addresses.get(0).address();
+        }
+        return host + ":" + options.tcpPort();
     }
 
     private void updateHeading(String title, String subtitle) {
@@ -405,12 +549,7 @@ public class PulseNetApp extends Application {
 
     // ================= VIEW 1: COMPLETE NOC OVERVIEW =================
 
-    private void showOverview() {
-        currentPage = "Overview";
-        updateHeading("System Overview",
-                "Real-time distributed infrastructure monitoring & advanced network telemetry");
-        contentArea.getChildren().clear();
-
+    private void buildOverview() {
         // 1. Top KPI Row (6 cards: Nodes Online, Nodes Offline, Avg RTT, Avg Jitter,
         // Rolling Loss %, Internet Access)
         HBox kpiRow = new HBox(14);
@@ -419,8 +558,8 @@ public class PulseNetApp extends Application {
         avgRttValue = createKpiCard(kpiRow, "AVG RTT LATENCY", CYAN_ACCENT, "⌁", "N/A", "UDP probe round-trip");
         avgJitterValue = createKpiCard(kpiRow, "AVG JITTER (RFC 3550)", YELLOW_ACCENT, "△", "N/A",
                 "Statistical packet jitter");
-        packetLossValue = createKpiCard(kpiRow, "ROLLING LOSS %", GREEN_ACCENT, "◌", "0.0%", "50-probe sliding window");
-        internetStatusValue = createKpiCard(kpiRow, "INTERNET ACCESS", GREEN_ACCENT, "🌐", "OFFLINE",
+        packetLossValue = createKpiCard(kpiRow, "ROLLING LOSS %", GREEN_ACCENT, "◌", "N/A", "50-probe sliding window");
+        internetStatusValue = createKpiCard(kpiRow, "INTERNET ACCESS", GREEN_ACCENT, "🌐", "N/A",
                 "Gateway & DNS transit");
 
         // 2. Circular Donut Ring Gauges Row + Forecast Box (4 Gauges + Sizing Box)
@@ -428,7 +567,7 @@ public class PulseNetApp extends Application {
         HBox gaugeRow = new HBox(14);
         HBox.setHgrow(gaugeRow, Priority.ALWAYS);
 
-        VBox netGaugeBox = createDonutGauge("NETWORK HEALTH", GREEN_ACCENT, "⌁", "Overall packet transmission");
+        VBox netGaugeBox = createDonutGauge("NETWORK HEALTH", GREEN_ACCENT, "⌁", "Share of nodes online");
         VBox cpuGaugeBox = createDonutGauge("CPU USAGE", CYAN_ACCENT, "◉", "Average online CPU utilization");
         VBox memGaugeBox = createDonutGauge("MEMORY USAGE", BLUE_ACCENT, "▤", "Average online RAM utilization");
         VBox diskGaugeBox = createDonutGauge("DISK USAGE", PURPLE_ACCENT, "◌", "Average online storage utilization");
@@ -445,14 +584,14 @@ public class PulseNetApp extends Application {
 
         VBox forecastBox = new VBox(10);
         forecastBox.setPadding(new Insets(18));
-        forecastBox.setMinWidth(270);
+        forecastBox.setMinWidth(190);
         forecastBox.setPrefWidth(290);
         forecastBox.setStyle(getPanelStyle());
-        forecastBox.getChildren().add(createSectionTitle("◈  TELEMETRY FORECAST"));
+        forecastBox.getChildren().add(createSectionTitle("◈  FLEET STATUS"));
         forecastLabel = new Label("Waiting for telemetry from monitored devices.");
         forecastLabel.setWrapText(true);
         forecastLabel.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
-        deviceCountLabel = new Label("REGISTERED DEVICES                           0");
+        deviceCountLabel = new Label();
         deviceCountLabel.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:10px;-fx-font-weight:bold;");
         forecastBox.getChildren().addAll(forecastLabel, deviceCountLabel);
 
@@ -462,8 +601,8 @@ public class PulseNetApp extends Application {
         Label netBatteryHeading = createSectionTitle("Network and Battery");
         HBox netBatteryRow = new HBox(14);
         VBox batteryCard = createStatCard("BATTERY", "N/A", "Waiting for agents...", GREEN_ACCENT);
-        VBox downloadCard = createStatCard("DOWNLOAD", "0.00 KB/s", "Incoming network traffic", BLUE_ACCENT);
-        VBox uploadCard = createStatCard("UPLOAD", "0.00 KB/s", "Outgoing network traffic", PURPLE_ACCENT);
+        VBox downloadCard = createStatCard("DOWNLOAD", "N/A", "Incoming traffic, all online nodes", BLUE_ACCENT);
+        VBox uploadCard = createStatCard("UPLOAD", "N/A", "Outgoing traffic, all online nodes", PURPLE_ACCENT);
         batteryVal = (Label) batteryCard.getChildren().get(1);
         batteryFootVal = (Label) batteryCard.getChildren().get(2);
         downloadSpeedVal = (Label) downloadCard.getChildren().get(1);
@@ -472,82 +611,12 @@ public class PulseNetApp extends Application {
 
         // 4. Real-Time Graphs & Trend Performance
         Label chartsHeading = createSectionTitle("Real-Time Graphs & Trend Performance");
-
-        // Row 1: Host System Load (%) & Network Latency (ms)
-        HBox row1Charts = new HBox(14);
-
-        // Chart 1: Host System Load (%)
-        VBox hostChartBox = new VBox(8);
-        hostChartBox.setStyle(getPanelStyle());
-        hostChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(hostChartBox, Priority.ALWAYS);
-        Label c1Title = new Label("HOST SYSTEM LOAD (%)");
-        c1Title.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x1 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x1.setLabel("Time (samples)");
-        NumberAxis y1 = new NumberAxis(0, 100, 20);
-        y1.setLabel("Usage %");
-        hostLoadChart = new LineChart<>(x1, y1);
-        hostLoadChart.setAnimated(false);
-        hostLoadChart.setCreateSymbols(false);
-        hostLoadChart.setPrefHeight(240);
-        cpuSeries = new XYChart.Series<>();
-        cpuSeries.setName("CPU Load");
-        memorySeries = new XYChart.Series<>();
-        memorySeries.setName("Memory");
-        initSeriesPoints(cpuSeries, cpuHistory);
-        initSeriesPoints(memorySeries, memHistory);
-        hostLoadChart.getData().addAll(cpuSeries, memorySeries);
-        hostChartBox.getChildren().addAll(c1Title, hostLoadChart);
-
-        // Chart 2: Live Network RTT Latency & Jitter (ms)
-        VBox latChartBox = new VBox(8);
-        latChartBox.setStyle(getPanelStyle());
-        latChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(latChartBox, Priority.ALWAYS);
-        Label c2Title = new Label("LIVE NETWORK RTT LATENCY & JITTER (ms)");
-        c2Title.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x2 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x2.setLabel("Time (samples)");
-        NumberAxis y2 = new NumberAxis();
-        y2.setLabel("Latency (ms)");
-        latencyChart = new LineChart<>(x2, y2);
-        latencyChart.setAnimated(false);
-        latencyChart.setCreateSymbols(false);
-        latencyChart.setPrefHeight(240);
-        rttSeries = new XYChart.Series<>();
-        rttSeries.setName("Current RTT (ms)");
-        jitterSeries = new XYChart.Series<>();
-        jitterSeries.setName("Avg Jitter (ms)");
-        initSeriesPoints(rttSeries, rttHistory);
-        initSeriesPoints(jitterSeries, jitterHistory);
-        latencyChart.getData().addAll(rttSeries, jitterSeries);
-        latChartBox.getChildren().addAll(c2Title, latencyChart);
-
-        row1Charts.getChildren().addAll(hostChartBox, latChartBox);
-
-        // Row 2: Wide Bandwidth Throughput Chart (KB/s)
-        VBox thrChartBox = new VBox(8);
-        thrChartBox.setStyle(getPanelStyle());
-        thrChartBox.setPadding(new Insets(14));
-        Label c3Title = new Label("NETWORK THROUGHPUT BANDWIDTH (DOWNLOAD & UPLOAD SPEED - KB/s)");
-        c3Title.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x3 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x3.setLabel("Time (samples)");
-        NumberAxis y3 = new NumberAxis();
-        y3.setLabel("Speed (KB/s)");
-        throughputChart = new LineChart<>(x3, y3);
-        throughputChart.setAnimated(false);
-        throughputChart.setCreateSymbols(false);
-        throughputChart.setPrefHeight(220);
-        downloadSeries = new XYChart.Series<>();
-        downloadSeries.setName("Download (Incoming)");
-        uploadSeries = new XYChart.Series<>();
-        uploadSeries.setName("Upload (Outgoing)");
-        initSeriesPoints(downloadSeries, downloadHistory);
-        initSeriesPoints(uploadSeries, uploadHistory);
-        throughputChart.getData().addAll(downloadSeries, uploadSeries);
-        thrChartBox.getChildren().addAll(c3Title, throughputChart);
+        hostLoadChart = new TrendChart("AVERAGE SYSTEM LOAD (%)", "Usage %", true, 240, "CPU Load", "Memory");
+        latencyChart = new TrendChart("AVERAGE NETWORK RTT LATENCY & JITTER (ms)", "Latency (ms)", false, 240,
+                "Avg RTT (ms)", "Avg Jitter (ms)");
+        throughputChart = new TrendChart("TOTAL NETWORK THROUGHPUT (DOWNLOAD & UPLOAD SPEED - KB/s)", "Speed (KB/s)",
+                false, 220, "Download (Incoming)", "Upload (Outgoing)");
+        HBox row1Charts = new HBox(14, hostLoadChart.box, latencyChart.box);
 
         // 5. Fleet Inventory & Network Status
         Label invHeading = createSectionTitle("Fleet Inventory & Quick Node Status");
@@ -573,178 +642,85 @@ public class PulseNetApp extends Application {
                 netBatteryRow,
                 chartsHeading,
                 row1Charts,
-                thrChartBox,
+                throughputChart.box,
                 invHeading,
                 invPanel,
                 actHeading,
                 actPanel);
-
-        refreshOverview();
     }
 
-    private void refreshOverview() {
-        if (!"Overview".equals(currentPage) || registry == null)
-            return;
+    private void refreshOverview(List<NodeRecord> nodes) {
+        FleetSummary fleet = FleetSummary.of(nodes);
 
-        List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
-        nodes.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER));
+        // KPIs
+        upValue.setText(String.valueOf(fleet.online()));
+        downValue.setText(String.valueOf(fleet.offline()));
+        avgRttValue.setText(formatMs(fleet.rtt()));
+        avgJitterValue.setText(formatMs(fleet.jitter()));
+        packetLossValue.setText(formatPercent(fleet.loss()));
+        setTextColor(packetLossValue, fleet.loss() > 0 ? RED_ACCENT : GREEN_ACCENT);
+        internetStatusValue.setText(fleet.internetReporting() == 0 ? "N/A"
+                : fleet.internetOnline() + "/" + fleet.internetReporting() + " ONLINE");
+        setTextColor(internetStatusValue, fleet.internetReporting() == 0 ? MUTED_TEXT
+                : fleet.internetOnline() == fleet.internetReporting() ? GREEN_ACCENT
+                : fleet.internetOnline() > 0 ? YELLOW_ACCENT : RED_ACCENT);
 
-        int total = nodes.size();
-        int up = 0;
-        int down = 0;
-        double cpuSum = 0;
-        double memSum = 0;
-        double diskSum = 0;
-        int measuredNodes = 0;
+        // Circular gauges
+        setDonutPercent(networkArc, networkValue,
+                fleet.total() > 0 ? fleet.online() * 100.0 / fleet.total() : Double.NaN);
+        setDonutPercent(cpuArc, cpuValue, fleet.cpu());
+        setDonutPercent(memoryArc, memoryValue, fleet.memory());
+        setDonutPercent(diskArc, diskValue, fleet.disk());
 
-        double rttSum = 0;
-        double jitterSum = 0;
-        double lossSum = 0;
-        int rttCount = 0;
-
-        int batteryNodes = 0;
-        double batterySum = 0;
-        double downloadTotal = 0;
-        double uploadTotal = 0;
-        int onlineInternet = 0;
-
-        for (NodeRecord n : nodes) {
-            String st = n.getStatus() == null ? "OFFLINE" : n.getStatus();
-            boolean isOff = "OFFLINE".equalsIgnoreCase(st);
-            if (isOff) {
-                down++;
-            } else {
-                up++;
-            }
-
-            TelemetryPayload p = n.getLatestPayload();
-            if (p != null && !isOff) {
-                cpuSum += p.getCpuPercent();
-                memSum += p.getMemoryPercent();
-                diskSum += p.getDiskPercent();
-                measuredNodes++;
-
-                if (p.isBatteryAvailable() && p.getBatteryPercent() >= 0) {
-                    batterySum += p.getBatteryPercent();
-                    batteryNodes++;
-                }
-
-                downloadTotal += p.getDownloadBytesPerSecond();
-                uploadTotal += p.getUploadBytesPerSecond();
-            }
-
-            NetworkMetrics net = n.getNetworkMetrics();
-            if (net != null && !isOff && net.getAvgRttMs() >= 0) {
-                rttSum += net.getAvgRttMs();
-                jitterSum += net.getAvgJitterMs();
-                lossSum += net.getPacketLossPercent();
-                rttCount++;
-            }
-
-            InternetConnectivityMetrics inet = n.getInternetMetrics();
-            if (inet != null && !isOff
-                    && InternetConnectivityMetrics.STATUS_ONLINE.equalsIgnoreCase(inet.getStatus())) {
-                onlineInternet++;
-            }
-        }
-
-        // Update KPIs
-        upValue.setText(String.valueOf(up));
-        downValue.setText(String.valueOf(down));
-
-        if (rttCount > 0) {
-            avgRttValue.setText(String.format(Locale.US, "%.1f ms", rttSum / rttCount));
-            avgJitterValue.setText(String.format(Locale.US, "%.1f ms", jitterSum / rttCount));
-            packetLossValue.setText(String.format(Locale.US, "%.1f%%", lossSum / rttCount));
-        } else {
-            avgRttValue.setText("N/A");
-            avgJitterValue.setText("N/A");
-            packetLossValue.setText("0.0%");
-        }
-
-        internetStatusValue.setText(nodes.isEmpty() ? "OFFLINE" : (onlineInternet + "/" + nodes.size() + " ONLINE"));
-
-        // Update circular donut ring gauges
-        double avgCpu = measuredNodes > 0 ? (cpuSum / measuredNodes) : 0.0;
-        double avgMem = measuredNodes > 0 ? (memSum / measuredNodes) : 0.0;
-        double avgDisk = measuredNodes > 0 ? (diskSum / measuredNodes) : 0.0;
-        double networkHealth = nodes.isEmpty() ? 0.0 : (up * 100.0 / nodes.size());
-
-        setDonutPercent(networkArc, networkValue, networkHealth);
-
-        if (nodes.isEmpty()) {
-            networkValue.setText("N/A");
-        }
-        setDonutPercent(cpuArc, cpuValue, avgCpu);
-        setDonutPercent(memoryArc, memoryValue, avgMem);
-        setDonutPercent(diskArc, diskValue, avgDisk);
-
-        // Update Forecast box
-        if (nodes.isEmpty()) {
-            forecastLabel
-                    .setText("No infrastructure agents are registered yet. Start an agent to begin live monitoring.");
-        } else if (down == 0) {
-            forecastLabel
-                    .setText(String.format(Locale.US, "All %d node(s) reporting live telemetry. RTT: %s. Loss: %s.",
-                            up, avgRttValue.getText(), packetLossValue.getText()));
-        } else {
+        // Fleet status box
+        if (fleet.total() == 0) {
+            forecastLabel.setText("No agents are registered yet. Start an agent on another laptop, or point it at "
+                    + connectAddress() + ".");
+        } else if (fleet.offline() > 0) {
             forecastLabel.setText(String.format(Locale.US, "Alert: %d node(s) OFFLINE out of %d registered devices.",
-                    down, nodes.size()));
+                    fleet.offline(), fleet.total()));
+        } else if (fleet.warnings() > 0) {
+            forecastLabel.setText(String.format(Locale.US, "%d of %d node(s) report WARNING (high CPU, memory or disk).",
+                    fleet.warnings(), fleet.total()));
+        } else {
+            forecastLabel.setText(String.format(Locale.US, "All %d node(s) reporting live telemetry. RTT: %s. Loss: %s.",
+                    fleet.online(), avgRttValue.getText(), packetLossValue.getText()));
         }
-        deviceCountLabel.setText("REGISTERED DEVICES                           " + nodes.size());
+        deviceCountLabel.setText("REGISTERED DEVICES:  " + fleet.total());
 
-        // Update Network and Battery
-        if (batteryNodes > 0) {
-            batteryVal.setText(String.format(Locale.US, "%.1f%%", batterySum / batteryNodes));
-            batteryFootVal.setText(batteryNodes + " battery-enabled node(s)");
-        } else if (up > 0) {
+        // Network and Battery
+        if (fleet.batteryNodes() > 0) {
+            batteryVal.setText(formatPercent(fleet.battery()));
+            batteryFootVal.setText(fleet.batteryNodes() + " battery-enabled node(s)");
+        } else if (fleet.online() > 0) {
             batteryVal.setText("Unavailable");
             batteryFootVal.setText("No battery-enabled node(s)");
-        } else if (total > 0) {
-            batteryVal.setText("N/A");
-            batteryFootVal.setText("All nodes offline");
         } else {
             batteryVal.setText("N/A");
-            batteryFootVal.setText("Waiting for agents...");
+            batteryFootVal.setText(fleet.total() > 0 ? "All nodes offline" : "Waiting for agents...");
         }
+        downloadSpeedVal.setText(fleet.online() > 0 ? formatSpeed(fleet.download()) : "N/A");
+        uploadSpeedVal.setText(fleet.online() > 0 ? formatSpeed(fleet.upload()) : "N/A");
 
-        downloadSpeedVal.setText(formatSpeed(downloadTotal));
-        uploadSpeedVal.setText(formatSpeed(uploadTotal));
+        hostLoadChart.update(fleetHistory, Metric.CPU, Metric.MEMORY);
+        latencyChart.update(fleetHistory, Metric.RTT, Metric.JITTER);
+        throughputChart.update(fleetHistory, Metric.DOWNLOAD, Metric.UPLOAD);
 
-        // Append line chart points
-        pushChartValue(cpuSeries, cpuHistory, avgCpu);
-        pushChartValue(memorySeries, memHistory, avgMem);
-        pushChartValue(rttSeries, rttHistory, rttCount > 0 ? (rttSum / rttCount) : 0.0);
-        pushChartValue(jitterSeries, jitterHistory, rttCount > 0 ? (jitterSum / rttCount) : 0.0);
-        pushChartValue(downloadSeries, downloadHistory, downloadTotal / 1024.0);
-        pushChartValue(uploadSeries, uploadHistory, uploadTotal / 1024.0);
-
-        // Refresh Inventory & Event feed
-        refreshInventorySummary(nodes);
-        refreshEventFeed();
-
-        // Update server status badge
-        serverOnlineBadge.setText(server != null && server.isRunning() ? "● SERVER ONLINE" : "● SERVER OFFLINE");
-        serverOnlineBadge.setStyle(server != null && server.isRunning()
-                ? "-fx-background-color:#064e3b;-fx-text-fill:#34d399;-fx-border-color:#059669;-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;"
-                : "-fx-background-color:#4c0519;-fx-text-fill:#fb7185;-fx-border-color:#e11d48;-fx-border-radius:20;-fx-background-radius:20;-fx-font-size:11px;-fx-font-weight:bold;");
+        patch(inventoryBoxList, buildInventorySummary(nodes));
+        patch(eventFeedBox, buildEventLabels(registry.getRecentEvents(12), "ALL", "No recent events recorded."));
     }
 
-    private void refreshInventorySummary(List<NodeRecord> nodes) {
-        inventoryBoxList.getChildren().clear();
+    private List<Node> buildInventorySummary(List<NodeRecord> nodes) {
+        List<Node> rows = new ArrayList<>();
         if (nodes.isEmpty()) {
-            Label empty = new Label(
-                    "No registered agents connected. Waiting for telemetry on TCP port " + tcpPort + "...");
-            empty.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:12px;");
-            empty.setPadding(new Insets(10));
-            inventoryBoxList.getChildren().add(empty);
-            return;
+            rows.add(createDetailLabel("No agents connected. Waiting for telemetry on " + connectAddress() + "..."));
+            return rows;
         }
 
         for (NodeRecord n : nodes) {
             TelemetryPayload p = n.getLatestPayload();
             NetworkMetrics net = n.getNetworkMetrics();
-            boolean isOffline = "OFFLINE".equalsIgnoreCase(n.getStatus());
+            boolean isOffline = FleetSummary.isOffline(n);
 
             HBox row = new HBox(12);
             row.setAlignment(Pos.CENTER_LEFT);
@@ -756,8 +732,7 @@ public class PulseNetApp extends Application {
             VBox left = new VBox(2);
             Label name = new Label(n.getNodeId());
             name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-            Label addr = new Label((n.getAgentHostname() != null ? n.getAgentHostname() : "agent") + "  •  "
-                    + (n.getRemoteAddress() != null ? n.getRemoteAddress() : ""));
+            Label addr = new Label(n.getAgentHostname() + "  •  " + address(n));
             addr.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
             left.getChildren().addAll(name, addr);
 
@@ -766,48 +741,36 @@ public class PulseNetApp extends Application {
 
             VBox statsBox = new VBox(2);
             statsBox.setAlignment(Pos.CENTER_RIGHT);
-            String rtt = (net != null && net.getAvgRttMs() >= 0)
-                    ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs())
-                    : "N/A";
-            String loss = (net != null && net.getProbesSent() > 0)
-                    ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent())
-                    : "0.0%";
-            Label netLbl = new Label("RTT: " + rtt + "  |  Loss: " + loss);
+            Label netLbl = new Label(isOffline ? "Last seen " + lastSeen(n)
+                    : "RTT: " + formatMs(net != null ? net.getAvgRttMs() : -1.0)
+                    + "  |  Loss: " + formatPercent(FleetSummary.packetLoss(net)));
             netLbl.setStyle(
                     "-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-size:11px;-fx-font-family:'Consolas', monospace;");
 
-            Label hwLbl = new Label(p != null
+            Label hwLbl = new Label(p != null && !isOffline
                     ? String.format(Locale.US, "CPU %.1f%%  RAM %.1f%%  DISK %.1f%%", p.getCpuPercent(),
                             p.getMemoryPercent(), p.getDiskPercent())
-                    : "CPU 0.0%  RAM 0.0%  DISK 0.0%");
+                    : "CPU N/A  RAM N/A  DISK N/A");
             hwLbl.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
             statsBox.getChildren().addAll(netLbl, hwLbl);
-
-            Label badge = createPillBadge(isOffline ? "• OFFLINE" : "• HEALTHY", isOffline ? RED_ACCENT : GREEN_ACCENT);
 
             Button inspectBtn = createSmallButton("DETAILS");
             inspectBtn.setOnAction(e -> showNodeDetails(n.getNodeId()));
 
-            row.getChildren().addAll(left, push, statsBox, badge, inspectBtn);
-            inventoryBoxList.getChildren().add(row);
+            row.getChildren().addAll(left, push, statsBox, createStatusBadge(n), inspectBtn);
+            rows.add(row);
         }
+        return rows;
     }
 
-    private void refreshEventFeed() {
-        eventFeedBox.getChildren().clear();
-        List<String> list = registry != null ? registry.getRecentEvents(12) : Collections.emptyList();
-        if (list.isEmpty()) {
-            Label empty = new Label("No recent events recorded.");
-            empty.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:12px;");
-            eventFeedBox.getChildren().add(empty);
-            return;
-        }
-
-        for (int i = list.size() - 1; i >= 0; i--) {
-            String event = list.get(i);
-            Label l = new Label(event);
-            l.setWrapText(true);
-
+    /** Event lines matching {@code filter}, newest first. */
+    private List<Node> buildEventLabels(List<String> events, String filter, String emptyText) {
+        List<Node> labels = new ArrayList<>();
+        for (int i = events.size() - 1; i >= 0; i--) {
+            String event = events.get(i);
+            if (!matchesFilter(event, filter)) {
+                continue;
+            }
             String color = GREEN_ACCENT;
             if (event.contains("[WARN]"))
                 color = YELLOW_ACCENT;
@@ -815,45 +778,32 @@ public class PulseNetApp extends Application {
                 color = RED_ACCENT;
             else if (event.contains("[SYS]"))
                 color = CYAN_ACCENT;
-            else if (event.contains("[REC]") || event.contains("[OK]"))
-                color = GREEN_ACCENT;
 
-            l.setStyle("-fx-text-fill:" + color + ";-fx-font-size:11.5px;-fx-font-family:'Consolas', monospace;");
-            eventFeedBox.getChildren().add(l);
+            Label l = new Label("●  " + event);
+            l.setWrapText(true);
+            l.setStyle("-fx-text-fill:" + color + ";-fx-font-size:12px;-fx-font-family:'Consolas', monospace;");
+            labels.add(l);
         }
+        if (labels.isEmpty()) {
+            labels.add(createDetailLabel(emptyText));
+        }
+        return labels;
     }
 
-    // ================= VIEW 2: SERVER FLEET / NODE MANAGEMENT (EXACTLY MATCHING
-    // PICTURES) =================
+    // ================= VIEW 2: SERVER FLEET / NODE MANAGEMENT =================
 
-    private void showServerFleet() {
-        currentPage = "Nodes";
-        updateHeading("Node Management", "View individual computer telemetry and hardware details");
-        contentArea.getChildren().clear();
-        refreshServerFleet();
-    }
-
-    private void refreshServerFleet() {
-        if (!"Nodes".equals(currentPage))
-            return;
-        contentArea.getChildren().clear();
-
-        List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
-        nodes.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER));
-
-        Label sectionTitle = createSectionTitle("All Registered Nodes");
-        contentArea.getChildren().add(sectionTitle);
-
+    private List<Node> buildServerFleet(List<NodeRecord> nodes) {
+        List<Node> content = new ArrayList<>();
+        content.add(createSectionTitle("All Registered Nodes"));
         if (nodes.isEmpty()) {
-            contentArea.getChildren().add(createEmptyStateWidget("No agent machines reporting hardware telemetry."));
-            return;
+            content.add(createEmptyStateWidget("No agents connected. Start an agent on another laptop, or point it at "
+                    + connectAddress() + "."));
+            return content;
         }
 
         for (NodeRecord node : nodes) {
             TelemetryPayload p = node.getLatestPayload();
-            boolean isOffline = "OFFLINE".equalsIgnoreCase(node.getStatus());
 
-            // Card structure exactly matching WhatsApp reference image 4
             VBox card = new VBox(14);
             card.setPadding(new Insets(24));
             card.setStyle(getPanelStyle());
@@ -871,86 +821,45 @@ public class PulseNetApp extends Application {
             inspectBtn.setOnAction(e -> showNodeDetails(node.getNodeId()));
 
             Button inspectNetBtn = createSmallButton("VIEW NETWORK PROBES →");
-            inspectNetBtn.setOnAction(e -> showNetworkFleet());
+            inspectNetBtn.setOnAction(e -> showPage(Page.NETWORK_FLEET));
 
-            Label statusBadge = createPillBadge(isOffline ? "• OFFLINE" : "• HEALTHY",
-                    isOffline ? RED_ACCENT : GREEN_ACCENT);
-            head.getChildren().addAll(nodeName, spacer, inspectBtn, inspectNetBtn, statusBadge);
+            head.getChildren().addAll(nodeName, spacer, inspectBtn, inspectNetBtn, createStatusBadge(node));
 
-            // Remote Address line
-            Label addrLine = new Label(
-                    "Address: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "/127.0.0.1:0"));
+            Label addrLine = new Label("Address: " + address(node) + staleNote(node));
             addrLine.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:13px;");
-
             card.getChildren().addAll(head, addrLine);
 
             if (p != null) {
+                boolean traffic = p.getTotalBytesReceived() > 0 || p.getTotalBytesSent() > 0;
                 VBox detailsList = new VBox(8);
                 detailsList.setPadding(new Insets(8, 0, 4, 0));
-
-                int cores = p.getCpuCoreCount();
-                String cpuLine = String.format(Locale.US, "CPU: %.1f%% | Cores: %s",
-                        p.getCpuPercent(), cores > 0 ? String.valueOf(cores) : "12");
-
-                double usedRamGb = p.getUsedMemoryBytes() / 1_000_000_000.0;
-                double totalRamGb = p.getTotalMemoryBytes() / 1_000_000_000.0;
-                String memLine = String.format(Locale.US, "Memory: %.1f%% | Used: %.2f GB / %.2f GB",
-                        p.getMemoryPercent(), usedRamGb, totalRamGb);
-
-                double freeDiskGb = p.getFreeDiskBytes() / 1_000_000_000.0;
-                String diskLine = String.format(Locale.US, "Disk: %.1f%% | Free: %.2f GB",
-                        p.getDiskPercent(), freeDiskGb);
-
-                String tempLine = "Temperature: " + (p.getCpuTemperatureCelsius() > 0
-                        ? String.format(Locale.US, "%.1f °C", p.getCpuTemperatureCelsius())
-                        : "Unavailable");
-
-                String batteryLine;
-                if (isOffline) {
-                    batteryLine = "Battery: N/A";
-                } else if (p.isBatteryAvailable() && p.getBatteryPercent() >= 0) {
-                    batteryLine = String.format(Locale.US, "Battery: %.1f%% (%s)",
-                            p.getBatteryPercent(),
-                            p.isBatteryCharging() ? "Charging" : "Not charging");
-                } else {
-                    batteryLine = "Battery: Unavailable";
-                }
-
-                String downLine = "Download: " + formatSpeed(p.getDownloadBytesPerSecond());
-                String upLine = "Upload: " + formatSpeed(p.getUploadBytesPerSecond());
-                String rxLine = "Network received: " + formatDataSize(p.getTotalBytesReceived());
-                String txLine = "Network sent: " + formatDataSize(p.getTotalBytesSent());
-                String procLine = "Processes: " + p.getProcessCount();
-                String osLine = "Operating System: " + safe(p.getOperatingSystem());
-                String hostLine = "Hostname: " + safe(p.getHostName());
-                String ipLine = "IP Address: " + safe(p.getIpAddress());
-                String uptimeLine = "Uptime: " + formatUptime(p.getUptimeSeconds());
-
                 detailsList.getChildren().addAll(
-                        createDetailLabel(cpuLine),
-                        createDetailLabel(memLine),
-                        createDetailLabel(diskLine),
-                        createDetailLabel(tempLine),
-                        createDetailLabel(batteryLine),
-                        createDetailLabel(downLine),
-                        createDetailLabel(upLine),
-                        createDetailLabel(rxLine),
-                        createDetailLabel(txLine),
-                        createDetailLabel(procLine),
-                        createDetailLabel(osLine),
-                        createDetailLabel(hostLine),
-                        createDetailLabel(ipLine),
-                        createDetailLabel(uptimeLine));
-
+                        createDetailLabel(String.format(Locale.US, "CPU: %.1f%% | Cores: %s", p.getCpuPercent(),
+                                cores(p))),
+                        createDetailLabel(String.format(Locale.US, "Memory: %.1f%% | Used: %s / %s", p.getMemoryPercent(),
+                                formatGb(p.getUsedMemoryBytes(), p.getTotalMemoryBytes()),
+                                formatGb(p.getTotalMemoryBytes(), p.getTotalMemoryBytes()))),
+                        createDetailLabel(String.format(Locale.US, "Disk: %.1f%% | Free: %s", p.getDiskPercent(),
+                                formatGb(p.getFreeDiskBytes(), p.getTotalDiskBytes()))),
+                        createDetailLabel("Temperature: " + temperature(p)),
+                        createDetailLabel("Battery: " + battery(node)),
+                        createDetailLabel("Download: " + (traffic ? formatSpeed(p.getDownloadBytesPerSecond()) : "N/A")),
+                        createDetailLabel("Upload: " + (traffic ? formatSpeed(p.getUploadBytesPerSecond()) : "N/A")),
+                        createDetailLabel("Network received: "
+                                + (traffic ? formatDataSize(p.getTotalBytesReceived()) : "N/A")),
+                        createDetailLabel("Network sent: " + (traffic ? formatDataSize(p.getTotalBytesSent()) : "N/A")),
+                        createDetailLabel("Processes: " + p.getProcessCount()),
+                        createDetailLabel("Operating System: " + safe(p.getOperatingSystem())),
+                        createDetailLabel("Hostname: " + safe(p.getHostName())),
+                        createDetailLabel("IP Address: " + safe(p.getIpAddress())),
+                        createDetailLabel("Uptime: " + formatUptime(p.getUptimeSeconds())));
                 card.getChildren().add(detailsList);
             } else {
-                Label waiting = new Label("Waiting for first telemetry payload...");
-                waiting.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:13px;");
-                card.getChildren().add(waiting);
+                card.getChildren().add(createDetailLabel("Waiting for first telemetry payload..."));
             }
-
-            contentArea.getChildren().add(card);
+            content.add(card);
         }
+        return content;
     }
 
     private Label createDetailLabel(String text) {
@@ -959,281 +868,122 @@ public class PulseNetApp extends Application {
         return l;
     }
 
-    // ================= VIEW 3: NODE DETAILS DRILL-DOWN (EXACTLY MATCHING PICTURES)
-    // =================
+    // ================= VIEW 3: NODE DETAILS DRILL-DOWN =================
 
-    private void showNodeDetails(String nodeId) {
-        selectedNodeId = nodeId;
-        currentPage = "Node Details";
-        updateHeading("Node Management", "View individual computer telemetry and hardware details");
-        contentArea.getChildren().clear();
-        refreshNodeDetails();
+    private void buildNodeDetails() {
+        Button backBtn = createSmallButton("← BACK TO ALL NODES");
+        backBtn.setOnAction(e -> showPage(Page.NODES));
+
+        detailInfoBox = new VBox(20);
+        detailCpuChart = new TrendChart("CPU PERFORMANCE", "Usage %", true, 200, "CPU");
+        detailMemChart = new TrendChart("MEMORY PERFORMANCE", "Usage %", true, 200, "Memory");
+        detailThroughputChart = new TrendChart("BANDWIDTH SPEED (KB/s)", "Speed (KB/s)", false, 200,
+                "Download", "Upload");
+        detailLatencyChart = new TrendChart("UDP RTT & JITTER (ms)", "Latency (ms)", false, 200,
+                "RTT Latency", "Jitter");
+        detailProbeBox = new VBox(20);
+
+        contentArea.getChildren().addAll(
+                backBtn,
+                detailInfoBox,
+                createSectionTitle("Resource Performance"),
+                new HBox(16, detailCpuChart.box, detailMemChart.box),
+                createSectionTitle("Network Performance & Probe Latency Graphs"),
+                new HBox(16, detailThroughputChart.box, detailLatencyChart.box),
+                detailProbeBox);
     }
 
     private void refreshNodeDetails() {
-        if (!"Node Details".equals(currentPage))
-            return;
-        contentArea.getChildren().clear();
-
-        Button backBtn = createSmallButton("← BACK TO ALL NODES");
-        backBtn.setOnAction(e -> {
-            selectedNodeId = null;
-            updateNavSelection("Nodes");
-            showServerFleet();
-        });
-        contentArea.getChildren().add(backBtn);
-
-        NodeRecord node = registry.getAllNodes().stream()
-                .filter(n -> n.getNodeId().equalsIgnoreCase(selectedNodeId))
-                .findFirst()
-                .orElse(null);
-
+        NodeRecord node = registry.getNode(selectedNodeId).orElse(null);
         if (node == null) {
-            contentArea.getChildren()
-                    .add(createEmptyStateWidget("Device '" + selectedNodeId + "' was not found in registry."));
+            patch(detailInfoBox, List.of(
+                    createEmptyStateWidget("Device '" + selectedNodeId + "' was not found in registry.")));
             return;
         }
-
         TelemetryPayload p = node.getLatestPayload();
         NetworkMetrics net = node.getNetworkMetrics();
         InternetConnectivityMetrics im = node.getInternetMetrics();
 
-        // 1. Hardware Information Card (Matching Image 2)
-        VBox hwCard = new VBox(10);
-        hwCard.setPadding(new Insets(20));
-        hwCard.setStyle(getPanelStyle());
-        Label hwTitle = new Label("Hardware Information");
-        hwTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:16px;-fx-font-weight:bold;");
+        HBox statusRow = new HBox(12, createStatusBadge(node),
+                createDetailLabel("Address: " + address(node) + staleNote(node)));
+        statusRow.setAlignment(Pos.CENTER_LEFT);
 
-        String tempStr = (p != null && p.getCpuTemperatureCelsius() > 0)
-                ? String.format(Locale.US, "%.1f °C", p.getCpuTemperatureCelsius())
-                : "Unavailable";
-        int cores = p != null ? p.getCpuCoreCount() : 12;
-        double usedRamGb = p != null ? p.getUsedMemoryBytes() / 1_000_000_000.0 : 0.0;
-        double totalRamGb = p != null ? p.getTotalMemoryBytes() / 1_000_000_000.0 : 0.0;
-        double totalDiskGb = p != null ? p.getTotalDiskBytes() / 1_000_000_000.0 : 0.0;
-        double usedDiskGb = p != null ? (p.getTotalDiskBytes() - p.getFreeDiskBytes()) / 1_000_000_000.0 : 0.0;
+        VBox hwCard = createCard("Hardware Information",
+                "CPU Temperature: " + temperature(p),
+                "Battery: " + battery(node),
+                "CPU Logical Cores: " + cores(p),
+                "RAM: " + (p == null ? "N/A" : formatGb(p.getUsedMemoryBytes(), p.getTotalMemoryBytes()) + " used / "
+                        + formatGb(p.getTotalMemoryBytes(), p.getTotalMemoryBytes()) + " total"),
+                "Disk: " + (p == null ? "N/A"
+                        : formatGb(p.getTotalDiskBytes() - p.getFreeDiskBytes(), p.getTotalDiskBytes()) + " used / "
+                        + formatGb(p.getTotalDiskBytes(), p.getTotalDiskBytes()) + " total"));
+        VBox sysCard = createCard("System Information",
+                "Operating System: " + (p != null ? safe(p.getOperatingSystem()) : "N/A"),
+                "System Uptime: " + (p != null ? formatUptime(p.getUptimeSeconds()) : "N/A"));
+        patch(detailInfoBox, List.of(statusRow, hwCard, sysCard));
 
-        boolean isNodeOff = "OFFLINE".equalsIgnoreCase(node.getStatus());
-        String battStr;
-        if (p == null || isNodeOff) {
-            battStr = "N/A";
-        } else if (p.isBatteryAvailable() && p.getBatteryPercent() >= 0) {
-            battStr = String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(),
-                    p.isBatteryCharging() ? "Charging" : "Not charging");
-        } else {
-            battStr = "Unavailable";
-        }
+        NodeHistory history = nodeHistories.getOrDefault(node.getNodeId(), new NodeHistory());
+        detailCpuChart.update(history, Metric.CPU);
+        detailMemChart.update(history, Metric.MEMORY);
+        detailThroughputChart.update(history, Metric.DOWNLOAD, Metric.UPLOAD);
+        detailLatencyChart.update(history, Metric.RTT, Metric.JITTER);
 
-        hwCard.getChildren().addAll(
-                hwTitle,
-                createDetailLabel("CPU Temperature: " + tempStr),
-                createDetailLabel("Battery: " + battStr),
-                createDetailLabel("CPU Logical Cores: " + (cores > 0 ? cores : 12)),
-                createDetailLabel(String.format(Locale.US, "RAM: %.2f GB used / %.2f GB total", usedRamGb, totalRamGb)),
-                createDetailLabel(
-                        String.format(Locale.US, "Disk: %.2f GB used / %.2f GB total", usedDiskGb, totalDiskGb)));
-
-        // 2. System Information Card (Matching Image 2)
-        VBox sysCard = new VBox(10);
-        sysCard.setPadding(new Insets(20));
-        sysCard.setStyle(getPanelStyle());
-        Label sysTitle = new Label("System Information");
-        sysTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:16px;-fx-font-weight:bold;");
-
-        sysCard.getChildren().addAll(
-                sysTitle,
-                createDetailLabel("Operating System: " + (p != null ? safe(p.getOperatingSystem()) : "Windows 11")),
-                createDetailLabel("System Uptime: " + (p != null ? formatUptime(p.getUptimeSeconds()) : "5d 5h 53m")));
-
-        // 3. Resource Performance Section (Dual charts: CPU PERFORMANCE & MEMORY
-        // PERFORMANCE)
-        Label resHeading = createSectionTitle("Resource Performance");
-        HBox chartRow = new HBox(16);
-
-        // CPU Performance Chart
-        VBox cpuChartBox = new VBox(8);
-        cpuChartBox.setStyle(getPanelStyle());
-        cpuChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(cpuChartBox, Priority.ALWAYS);
-        Label cpuChartTitle = new Label("CPU PERFORMANCE");
-        cpuChartTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x1 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x1.setLabel("Time (samples)");
-        NumberAxis y1 = new NumberAxis(0, 100, 20);
-        y1.setLabel("Usage %");
-        detailCpuChart = new LineChart<>(x1, y1);
-        detailCpuChart.setAnimated(false);
-        detailCpuChart.setCreateSymbols(false);
-        detailCpuChart.setLegendVisible(false);
-        detailCpuChart.setPrefHeight(200);
-        detailCpuSeries = new XYChart.Series<>();
-        initSeriesPoints(detailCpuSeries, detailCpuHistory);
-        detailCpuChart.getData().add(detailCpuSeries);
-        cpuChartBox.getChildren().addAll(cpuChartTitle, detailCpuChart);
-
-        // Memory Performance Chart
-        VBox memChartBox = new VBox(8);
-        memChartBox.setStyle(getPanelStyle());
-        memChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(memChartBox, Priority.ALWAYS);
-        Label memChartTitle = new Label("MEMORY PERFORMANCE");
-        memChartTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x2 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x2.setLabel("Time (samples)");
-        NumberAxis y2 = new NumberAxis(0, 100, 20);
-        y2.setLabel("Usage %");
-        detailMemChart = new LineChart<>(x2, y2);
-        detailMemChart.setAnimated(false);
-        detailMemChart.setCreateSymbols(false);
-        detailMemChart.setLegendVisible(false);
-        detailMemChart.setPrefHeight(200);
-        detailMemSeries = new XYChart.Series<>();
-        initSeriesPoints(detailMemSeries, detailMemHistory);
-        detailMemChart.getData().add(detailMemSeries);
-        memChartBox.getChildren().addAll(memChartTitle, detailMemChart);
-
-        chartRow.getChildren().addAll(cpuChartBox, memChartBox);
-
-        // 4. Network Performance & Latency Charts
-        Label netHeading = createSectionTitle("Network Performance & Probe Latency Graphs");
-        HBox netChartsRow = new HBox(16);
-
-        // Throughput Chart
-        VBox netChartBox = new VBox(8);
-        netChartBox.setStyle(getPanelStyle());
-        netChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(netChartBox, Priority.ALWAYS);
-        Label netChartTitle = new Label("BANDWIDTH SPEED (KB/s)");
-        netChartTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x3 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x3.setLabel("Time (samples)");
-        NumberAxis y3 = new NumberAxis();
-        y3.setLabel("Speed (KB/s)");
-        detailThroughputChart = new LineChart<>(x3, y3);
-        detailThroughputChart.setAnimated(false);
-        detailThroughputChart.setCreateSymbols(false);
-        detailThroughputChart.setPrefHeight(200);
-        detailDownloadSeries = new XYChart.Series<>();
-        detailDownloadSeries.setName("Download");
-        detailUploadSeries = new XYChart.Series<>();
-        detailUploadSeries.setName("Upload");
-        initSeriesPoints(detailDownloadSeries, detailDownloadHistory);
-        initSeriesPoints(detailUploadSeries, detailUploadHistory);
-        detailThroughputChart.getData().addAll(detailDownloadSeries, detailUploadSeries);
-        netChartBox.getChildren().addAll(netChartTitle, detailThroughputChart);
-
-        // Latency Chart
-        VBox latChartBox = new VBox(8);
-        latChartBox.setStyle(getPanelStyle());
-        latChartBox.setPadding(new Insets(14));
-        HBox.setHgrow(latChartBox, Priority.ALWAYS);
-        Label latChartTitle = new Label("UDP RTT & JITTER (ms)");
-        latChartTitle.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
-        NumberAxis x4 = new NumberAxis(0, MAX_CHART_HISTORY, 5);
-        x4.setLabel("Time (samples)");
-        NumberAxis y4 = new NumberAxis();
-        y4.setLabel("Latency (ms)");
-        detailLatencyChart = new LineChart<>(x4, y4);
-        detailLatencyChart.setAnimated(false);
-        detailLatencyChart.setCreateSymbols(false);
-        detailLatencyChart.setPrefHeight(200);
-        detailRttSeries = new XYChart.Series<>();
-        detailRttSeries.setName("RTT Latency");
-        detailJitterSeries = new XYChart.Series<>();
-        detailJitterSeries.setName("Jitter");
-        initSeriesPoints(detailRttSeries, detailRttHistory);
-        initSeriesPoints(detailJitterSeries, detailJitterHistory);
-        detailLatencyChart.getData().addAll(detailRttSeries, detailJitterSeries);
-        latChartBox.getChildren().addAll(latChartTitle, detailLatencyChart);
-
-        netChartsRow.getChildren().addAll(netChartBox, latChartBox);
-
-        // 5. Network Probe & Internet Routing Grid
-        Label probeHeading = createSectionTitle("Network Probes & Internet Routing");
-        VBox probeCard = new VBox(12);
-        probeCard.setStyle(getPanelStyle());
-        probeCard.setPadding(new Insets(18));
         GridPane netGrid = new GridPane();
         netGrid.setHgap(32);
         netGrid.setVgap(10);
-
+        double loss = FleetSummary.packetLoss(net);
         addGridItem(netGrid, 0, 0, "Current RTT", formatMs(net != null ? net.getCurrentRttMs() : -1.0), CYAN_ACCENT);
         addGridItem(netGrid, 1, 0, "Average RTT", formatMs(net != null ? net.getAvgRttMs() : -1.0), CYAN_ACCENT);
-        addGridItem(netGrid, 2, 0, "Packet Loss",
-                (net != null ? String.format(Locale.US, "%.1f%%", net.getPacketLossPercent()) : "0.0%"),
-                (net != null && net.getPacketLossPercent() > 0 ? RED_ACCENT : GREEN_ACCENT));
+        addGridItem(netGrid, 2, 0, "Packet Loss", formatPercent(loss), lossColor(loss));
         addGridItem(netGrid, 3, 0, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0),
                 YELLOW_ACCENT);
+        addInternetItems(netGrid, 1, node, im);
 
-        String gw = (im != null && im.getGatewayIp() != null) ? im.getGatewayIp() : "172.20.10.1";
-        String dns = (im != null && im.getDnsResolutionTimeMs() >= 0) ? (im.getDnsResolutionTimeMs() + " ms") : "15 ms";
-        String https = (im != null && im.isHttpsSuccess()) ? "REACHABLE (200)" : "REACHABLE (200)";
-        addGridItem(netGrid, 0, 1, "Internet Access", (im != null ? im.getStatus() : "ONLINE"), GREEN_ACCENT);
-        addGridItem(netGrid, 1, 1, "Default Gateway", gw, WHITE_TEXT);
-        addGridItem(netGrid, 2, 1, "DNS Resolution", dns, WHITE_TEXT);
-        addGridItem(netGrid, 3, 1, "Google HTTPS", https, GREEN_ACCENT);
-
+        VBox probeCard = new VBox(12);
+        probeCard.setStyle(getPanelStyle());
+        probeCard.setPadding(new Insets(18));
         probeCard.getChildren().add(netGrid);
-
-        contentArea.getChildren().addAll(
-                hwCard,
-                sysCard,
-                resHeading,
-                chartRow,
-                netHeading,
-                netChartsRow,
-                probeHeading,
-                probeCard);
-
-        if (p != null) {
-            pushChartValue(detailCpuSeries, detailCpuHistory, p.getCpuPercent());
-            pushChartValue(detailMemSeries, detailMemHistory, p.getMemoryPercent());
-            pushChartValue(detailDownloadSeries, detailDownloadHistory, p.getDownloadBytesPerSecond() / 1024.0);
-            pushChartValue(detailUploadSeries, detailUploadHistory, p.getUploadBytesPerSecond() / 1024.0);
-        } else {
-            pushChartValue(detailCpuSeries, detailCpuHistory, 0.0);
-            pushChartValue(detailMemSeries, detailMemHistory, 0.0);
-            pushChartValue(detailDownloadSeries, detailDownloadHistory, 0.0);
-            pushChartValue(detailUploadSeries, detailUploadHistory, 0.0);
-        }
-        if (net != null && net.getAvgRttMs() >= 0) {
-            pushChartValue(detailRttSeries, detailRttHistory, net.getCurrentRttMs());
-            pushChartValue(detailJitterSeries, detailJitterHistory, net.getAvgJitterMs());
-        } else {
-            pushChartValue(detailRttSeries, detailRttHistory, 0.0);
-            pushChartValue(detailJitterSeries, detailJitterHistory, 0.0);
-        }
+        patch(detailProbeBox, List.of(createSectionTitle("Network Probes & Internet Routing"), probeCard));
     }
 
-    // ================= VIEW 4: NETWORK FLEET (YASHODHA'S TERMINAL-EQUIVALENT
-    // CARDS) =================
-
-    private void showNetworkFleet() {
-        currentPage = "Network Fleet";
-        updateHeading("Network Fleet", "RTT Latency, RFC 3550 Jitter, UDP Packet Loss, and Agent Probing");
-        contentArea.getChildren().clear();
-        refreshNetworkFleet();
+    private VBox createCard(String title, String... lines) {
+        VBox card = new VBox(10);
+        card.setPadding(new Insets(20));
+        card.setStyle(getPanelStyle());
+        card.getChildren().add(createSectionTitle(title));
+        for (String line : lines) {
+            card.getChildren().add(createDetailLabel(line));
+        }
+        return card;
     }
 
-    private void refreshNetworkFleet() {
-        if (!"Network Fleet".equals(currentPage))
-            return;
-        contentArea.getChildren().clear();
+    /** Adds Internet access, gateway, DNS and HTTPS results; unmeasured values read N/A. */
+    private void addInternetItems(GridPane grid, int row, NodeRecord node, InternetConnectivityMetrics im) {
+        String status = internetStatus(node);
+        addGridItem(grid, 0, row, "Internet Access", status, internetColor(status));
+        boolean measured = isInternetMeasured(node);
+        addGridItem(grid, 1, row, "Default Gateway", gateway(node) + (!measured ? ""
+                : im.isGatewayReachable() ? " (reachable)" : " (unreachable)"),
+                measured && !im.isGatewayReachable() ? RED_ACCENT : WHITE_TEXT);
+        addGridItem(grid, 2, row, "DNS Resolution", dns(node),
+                measured && !im.isDnsSuccess() ? RED_ACCENT : WHITE_TEXT);
+        addGridItem(grid, 3, row, "External HTTPS", https(node),
+                !measured ? MUTED_TEXT : im.isHttpsSuccess() ? GREEN_ACCENT : RED_ACCENT);
+    }
 
-        List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
-        nodes.sort(Comparator.comparing(NodeRecord::getNodeId, String.CASE_INSENSITIVE_ORDER));
+    // ================= VIEW 4: NETWORK FLEET =================
 
+    private List<Node> buildNetworkFleet(List<NodeRecord> nodes) {
+        List<Node> content = new ArrayList<>();
         if (nodes.isEmpty()) {
-            contentArea.getChildren().add(createEmptyStateWidget(
-                    "No agent nodes connected. Waiting for telemetry streaming on TCP port " + tcpPort + "..."));
-            return;
+            content.add(createEmptyStateWidget(
+                    "No agent nodes connected. Waiting for telemetry on " + connectAddress() + "..."));
+            return content;
         }
 
         for (NodeRecord node : nodes) {
             NetworkMetrics net = node.getNetworkMetrics();
-            InternetConnectivityMetrics inet = node.getInternetMetrics();
-            boolean isOffline = "OFFLINE".equalsIgnoreCase(node.getStatus());
+            boolean isOffline = FleetSummary.isOffline(node);
 
             VBox card = new VBox(14);
             card.setPadding(new Insets(22));
@@ -1247,8 +997,7 @@ public class PulseNetApp extends Application {
             Label hostPill = new Label("[Host: " + node.getAgentHostname() + "]");
             hostPill.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:12px;");
 
-            Label ipPill = new Label(
-                    "[IP: " + (node.getRemoteAddress() != null ? node.getRemoteAddress() : "unknown") + "]");
+            Label ipPill = new Label("[IP: " + address(node) + "]");
             ipPill.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:12px;");
 
             Region push = new Region();
@@ -1261,8 +1010,10 @@ public class PulseNetApp extends Application {
                     isOffline ? RED_ACCENT : GREEN_ACCENT);
             head.getChildren().addAll(name, hostPill, ipPill, push, inspectBtn, statusBadge);
 
-            Label transportLine = new Label(String.format("Server: %s:%d (TCP) | Probe: :%d (UDP) | Status: %s",
-                    DEFAULT_HOST, tcpPort, udpProbePort, isOffline ? "OFFLINE" : "HEALTHY"));
+            String serverHost = net != null && net.getServerHost() != null ? net.getServerHost() : options.host();
+            int agentProbePort = net != null && net.getUdpProbePort() > 0 ? net.getUdpProbePort() : options.probePort();
+            Label transportLine = new Label(String.format("Server: %s:%d (TCP) | Probe: :%d (UDP) | Status: %s%s",
+                    serverHost, options.tcpPort(), agentProbePort, node.getStatus(), staleNote(node)));
             transportLine.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;");
 
             // Latency & Quality
@@ -1275,15 +1026,19 @@ public class PulseNetApp extends Application {
             addGridItem(grid, 2, 0, "Minimum RTT", formatMs(net != null ? net.getMinRttMs() : -1.0), GREEN_ACCENT);
             addGridItem(grid, 3, 0, "Maximum RTT", formatMs(net != null ? net.getMaxRttMs() : -1.0), YELLOW_ACCENT);
 
-            double rollingLoss = net != null ? net.getPacketLossPercent() : 0.0;
-            double cumLoss = net != null ? net.getCumulativeLossPercent() : 0.0;
-            addGridItem(grid, 0, 1, "Packet Loss (Rolling)", String.format(Locale.US, "%.1f%%", rollingLoss),
-                    rollingLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
-            addGridItem(grid, 1, 1, "Cumulative Loss", String.format(Locale.US, "%.1f%%", cumLoss),
-                    cumLoss > 0 ? RED_ACCENT : GREEN_ACCENT);
+            double rollingLoss = FleetSummary.packetLoss(net);
+            double cumLoss = Double.isNaN(rollingLoss) ? Double.NaN : net.getCumulativeLossPercent();
+            addGridItem(grid, 0, 1, "Packet Loss (Rolling)", formatPercent(rollingLoss), lossColor(rollingLoss));
+            addGridItem(grid, 1, 1, "Cumulative Loss", formatPercent(cumLoss), lossColor(cumLoss));
             addGridItem(grid, 2, 1, "RFC 3550 Jitter", formatMs(net != null ? net.getAvgJitterMs() : -1.0),
                     YELLOW_ACCENT);
-            addGridItem(grid, 3, 1, "Quality Rating", getQualityString(net), GREEN_ACCENT);
+            String quality = isOffline ? "N/A" : getQualityString(net);
+            addGridItem(grid, 3, 1, "Quality Rating", quality, switch (quality) {
+                case "OPTIMAL" -> GREEN_ACCENT;
+                case "FAIR" -> YELLOW_ACCENT;
+                case "DEGRADED" -> RED_ACCENT;
+                default -> MUTED_TEXT;
+            });
 
             addGridItem(grid, 0, 2, "Probes Sent", String.valueOf(net != null ? net.getProbesSent() : 0), WHITE_TEXT);
             addGridItem(grid, 1, 2, "Probes Received", String.valueOf(net != null ? net.getProbesReceived() : 0),
@@ -1293,27 +1048,19 @@ public class PulseNetApp extends Application {
             addGridItem(grid, 3, 2, "Reconnections", String.valueOf(net != null ? net.getReconnectionCount() : 0),
                     WHITE_TEXT);
 
-            addGridItem(grid, 0, 3, "Default Gateway",
-                    inet != null && inet.getGatewayIp() != null ? inet.getGatewayIp() : "172.20.10.1", WHITE_TEXT);
-            addGridItem(grid, 1, 3, "DNS Query Time",
-                    inet != null && inet.getDnsResolutionTimeMs() >= 0 ? inet.getDnsResolutionTimeMs() + " ms"
-                            : "12 ms",
-                    WHITE_TEXT);
-            addGridItem(grid, 2, 3, "External HTTPS", inet != null && inet.isHttpsSuccess() ? "REACHABLE" : "REACHABLE",
-                    GREEN_ACCENT);
-            addGridItem(grid, 3, 3, "Gateway Ping",
-                    inet != null && inet.isGatewayReachable() ? "REACHABLE" : "REACHABLE", GREEN_ACCENT);
+            addInternetItems(grid, 3, node, node.getInternetMetrics());
 
             card.getChildren().addAll(head, transportLine, new Separator(), grid);
-            contentArea.getChildren().add(card);
+            content.add(card);
         }
+        return content;
     }
 
     private String getQualityString(NetworkMetrics net) {
-        if (net == null || net.getAvgRttMs() < 0)
-            return "UNKNOWN";
+        double loss = FleetSummary.packetLoss(net);
+        if (Double.isNaN(loss))
+            return "N/A";
         double rtt = net.getAvgRttMs();
-        double loss = net.getPacketLossPercent();
         if (loss > 5.0 || rtt > 150.0)
             return "DEGRADED";
         if (loss > 0.0 || rtt > 60.0)
@@ -1323,205 +1070,240 @@ public class PulseNetApp extends Application {
 
     // ================= VIEW 5: NETWORK DIAGNOSTICS =================
 
-    private void showNetworkDiagnostics() {
-        currentPage = "Diagnostics";
-        updateHeading("Network Diagnostics", "Fleet RTT Latency Rankings, Jitter Variance, and Packet Loss");
-        contentArea.getChildren().clear();
-
-        List<NodeRecord> nodes = new ArrayList<>(registry.getAllNodes());
-        nodes.sort(Comparator.comparingDouble(n -> {
+    private List<Node> buildDiagnostics(List<NodeRecord> nodes) {
+        List<NodeRecord> ranked = new ArrayList<>(nodes);
+        // Unmeasured and offline nodes cannot be ranked: they come last
+        ranked.sort(Comparator.comparingDouble(n -> {
             NetworkMetrics m = n.getNetworkMetrics();
-            return (m != null && m.getAvgRttMs() >= 0) ? m.getAvgRttMs() : 9999.0;
+            return m != null && m.getAvgRttMs() >= 0 && !FleetSummary.isOffline(n)
+                    ? m.getAvgRttMs() : Double.MAX_VALUE;
         }));
 
         VBox card = new VBox(14);
         card.setStyle(getPanelStyle());
         card.setPadding(new Insets(20));
+        card.getChildren().add(createSectionTitle("Lowest-to-Highest RTT Performance"));
 
-        Label head = createSectionTitle("Lowest-to-Highest RTT Performance");
-        card.getChildren().add(head);
-
-        if (nodes.isEmpty()) {
-            card.getChildren().add(new Label("No nodes registered for latency ranking."));
-        } else {
-            int rank = 1;
-            for (NodeRecord n : nodes) {
-                NetworkMetrics net = n.getNetworkMetrics();
-                HBox row = new HBox(14);
-                row.setAlignment(Pos.CENTER_LEFT);
-                row.setPadding(new Insets(10));
-                row.setStyle("-fx-background-color:" + PANEL_ALT + ";-fx-background-radius:6;");
-
-                Label rLbl = new Label("#" + (rank++));
-                rLbl.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-weight:bold;");
-
-                Label name = new Label(n.getNodeId());
-                name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-weight:bold;");
-
-                Region sp = new Region();
-                HBox.setHgrow(sp, Priority.ALWAYS);
-
-                String rtt = (net != null && net.getAvgRttMs() >= 0)
-                        ? String.format(Locale.US, "%.1f ms", net.getAvgRttMs())
-                        : "N/A";
-                String jit = (net != null && net.getAvgJitterMs() >= 0)
-                        ? String.format(Locale.US, "%.1f ms", net.getAvgJitterMs())
-                        : "N/A";
-                Label val = new Label("Avg RTT: " + rtt + "  |  Jitter: " + jit);
-                val.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";");
-
-                row.getChildren().addAll(rLbl, name, sp, val, createPillBadge(n.getStatus(),
-                        "OFFLINE".equalsIgnoreCase(n.getStatus()) ? RED_ACCENT : GREEN_ACCENT));
-                card.getChildren().add(row);
-            }
+        if (ranked.isEmpty()) {
+            card.getChildren().add(createDetailLabel("No nodes registered for latency ranking."));
         }
+        int rank = 1;
+        for (NodeRecord n : ranked) {
+            NetworkMetrics net = FleetSummary.isOffline(n) ? null : n.getNetworkMetrics();
+            boolean measured = net != null && net.getAvgRttMs() >= 0;
+            HBox row = new HBox(14);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.setPadding(new Insets(10));
+            row.setStyle("-fx-background-color:" + PANEL_ALT + ";-fx-background-radius:6;");
 
-        contentArea.getChildren().add(card);
+            Label rLbl = new Label(measured ? "#" + rank++ : "–");
+            rLbl.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-weight:bold;");
+
+            Label name = new Label(n.getNodeId());
+            name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-weight:bold;");
+
+            Region sp = new Region();
+            HBox.setHgrow(sp, Priority.ALWAYS);
+
+            Label val = new Label("Avg RTT: " + formatMs(measured ? net.getAvgRttMs() : -1.0)
+                    + "  |  Jitter: " + formatMs(measured ? net.getAvgJitterMs() : -1.0)
+                    + "  |  Loss: " + formatPercent(FleetSummary.packetLoss(net)));
+            val.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";");
+
+            row.getChildren().addAll(rLbl, name, sp, val, createStatusBadge(n));
+            card.getChildren().add(row);
+        }
+        return List.of(card);
     }
 
     // ================= VIEW 6: INTERACTIVE TOPOLOGY =================
 
-    private void showTopology() {
-        currentPage = "Topology";
-        updateHeading("Network Topology", "Interactive Aggregator Hub and Connected Agents Map");
-        contentArea.getChildren().clear();
-
+    private void buildTopology() {
         VBox panel = new VBox(14);
         panel.setPadding(new Insets(20));
         panel.setStyle(getPanelStyle());
 
-        Label title = createSectionTitle("Live Agent-to-Server Communication Topology");
-        Pane topoPane = new Pane();
-        topoPane.setPrefHeight(450);
+        topologyPane = new Pane();
+        topologySignature = "";
+        topologyPane.widthProperty().addListener((obs, oldW, newW) -> refreshTopology(registry.getAllNodes()));
 
-        panel.getChildren().addAll(title, topoPane);
+        panel.getChildren().addAll(createSectionTitle("Live Agent-to-Server Communication Topology"), topologyPane);
         contentArea.getChildren().add(panel);
+    }
 
-        drawTopology(topoPane, registry.getAllNodes());
-        topoPane.widthProperty().addListener((obs, oldW, newW) -> drawTopology(topoPane, registry.getAllNodes()));
+    /** Redraws only when something visible changed, so nodes stay clickable between updates. */
+    private void refreshTopology(List<NodeRecord> nodes) {
+        StringBuilder signature = new StringBuilder().append((int) topologyPane.getWidth());
+        for (NodeRecord n : nodes) {
+            signature.append('|').append(n.getNodeId()).append('=').append(n.getStatus());
+        }
+        if (!signature.toString().equals(topologySignature)) {
+            topologySignature = signature.toString();
+            drawTopology(topologyPane, nodes);
+        }
     }
 
     private void drawTopology(Pane pane, List<NodeRecord> nodes) {
-        pane.getChildren().clear();
-        double w = Math.max(400, pane.getWidth() > 0 ? pane.getWidth() : 600);
+        final double cellWidth = 120;
+        final double rowHeight = 90;
+        final double agentTop = 200;
+        double w = Math.max(400, pane.getWidth());
         double cx = w / 2;
         double serverY = 40;
-        double agentY = 180;
 
-        // Central Server Hub
-        Circle serverCircle = new Circle(cx, serverY, 22, Color.web("#064e3b"));
-        serverCircle.setStroke(Color.web(GREEN_ACCENT));
-        serverCircle.setStrokeWidth(2.5);
+        int perRow = Math.max(1, (int) ((w - 40) / cellWidth));
+        int rows = (nodes.size() + perRow - 1) / perRow;
+        pane.setPrefHeight(Math.max(450, agentTop + rows * rowHeight));
 
-        Label serverText = new Label("PULSENET SERVER\n(TCP 9000 | UDP 9002)");
-        serverText.setAlignment(Pos.CENTER);
-        serverText.setStyle("-fx-text-fill:" + GREEN_ACCENT + ";-fx-font-size:10px;-fx-font-weight:bold;");
-        serverText.setLayoutX(cx - 65);
-        serverText.setLayoutY(serverY + 28);
-        pane.getChildren().addAll(serverCircle, serverText);
-
-        if (nodes.isEmpty()) {
-            Label wait = new Label("Waiting for agents to connect...");
-            wait.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:12px;");
-            wait.setLayoutX(cx - 85);
-            wait.setLayoutY(agentY + 30);
-            pane.getChildren().add(wait);
-            return;
-        }
-
-        int count = Math.min(nodes.size(), 8);
-        double gap = Math.min(100, (w - 60) / Math.max(1, count));
-        double startX = cx - (gap * (count - 1)) / 2;
-
-        for (int i = 0; i < count; i++) {
+        List<Node> links = new ArrayList<>();
+        List<Node> shapes = new ArrayList<>();
+        for (int i = 0; i < nodes.size(); i++) {
             NodeRecord n = nodes.get(i);
-            double ax = startX + i * gap;
-            boolean online = !"OFFLINE".equalsIgnoreCase(n.getStatus());
+            int row = i / perRow;
+            int inRow = Math.min(perRow, nodes.size() - row * perRow);
+            double ax = cx + (i % perRow - (inRow - 1) / 2.0) * cellWidth;
+            double ay = agentTop + row * rowHeight;
+            String color = statusColor(n);
 
-            Line link = new Line(cx, serverY + 22, ax, agentY - 14);
-            link.setStroke(Color.web(online ? GREEN_ACCENT : RED_ACCENT));
+            Line link = new Line(cx, serverY, ax, ay);
+            link.setStroke(Color.web(color));
+            link.setOpacity(0.7);
             link.setStrokeWidth(1.8);
+            links.add(link);
 
-            Rectangle agentBox = new Rectangle(ax - 18, agentY - 14, 36, 28);
+            Rectangle agentBox = new Rectangle(ax - 18, ay - 14, 36, 28);
             agentBox.setArcWidth(8);
             agentBox.setArcHeight(8);
-            agentBox.setFill(Color.web(online ? "#112e28" : "#3b1219"));
-            agentBox.setStroke(Color.web(online ? GREEN_ACCENT : RED_ACCENT));
+            agentBox.setFill(Color.web(FleetSummary.isOffline(n) ? "#3b1219" : "#112e28"));
+            agentBox.setStroke(Color.web(color));
             agentBox.setStrokeWidth(1.5);
             agentBox.setStyle("-fx-cursor:hand;");
             agentBox.setOnMouseClicked(e -> showNodeDetails(n.getNodeId()));
 
             Label nodeLbl = new Label(n.getNodeId());
-            nodeLbl.setStyle(
-                    "-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:9px;-fx-font-weight:bold;-fx-cursor:hand;");
-            nodeLbl.setLayoutX(ax - 28);
-            nodeLbl.setLayoutY(agentY + 18);
+            nodeLbl.setTooltip(new Tooltip(n.getNodeId() + "\n" + address(n) + "\n" + n.getStatus()));
+            nodeLbl.setAlignment(Pos.CENTER);
+            nodeLbl.setPrefWidth(cellWidth - 8);
+            nodeLbl.setStyle("-fx-background-color:" + PANEL_BG + ";-fx-text-fill:" + WHITE_TEXT
+                    + ";-fx-font-size:10px;-fx-font-weight:bold;-fx-cursor:hand;");
+            nodeLbl.setLayoutX(ax - (cellWidth - 8) / 2);
+            nodeLbl.setLayoutY(ay + 18);
             nodeLbl.setOnMouseClicked(e -> showNodeDetails(n.getNodeId()));
+            shapes.add(agentBox);
+            shapes.add(nodeLbl);
+        }
 
-            pane.getChildren().addAll(link, agentBox, nodeLbl);
+        // Central Server Hub, drawn over the links
+        Circle serverCircle = new Circle(cx, serverY, 22, Color.web("#064e3b"));
+        serverCircle.setStroke(Color.web(GREEN_ACCENT));
+        serverCircle.setStrokeWidth(2.5);
+        Label serverText = new Label(String.format("PULSENET SERVER  (TCP %d | UDP %d)", options.tcpPort(),
+                options.probePort()));
+        serverText.setAlignment(Pos.CENTER);
+        serverText.setPrefWidth(240);
+        serverText.setStyle("-fx-background-color:" + PANEL_BG + ";-fx-text-fill:" + GREEN_ACCENT
+                + ";-fx-font-size:10px;-fx-font-weight:bold;");
+        serverText.setLayoutX(cx - 120);
+        serverText.setLayoutY(serverY + 28);
+
+        pane.getChildren().setAll(links);
+        pane.getChildren().addAll(shapes);
+        pane.getChildren().addAll(serverCircle, serverText);
+
+        if (nodes.isEmpty()) {
+            Label wait = new Label("Waiting for agents to connect...");
+            wait.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:12px;");
+            wait.setAlignment(Pos.CENTER);
+            wait.setPrefWidth(240);
+            wait.setLayoutX(cx - 120);
+            wait.setLayoutY(agentTop);
+            pane.getChildren().add(wait);
         }
     }
 
     // ================= VIEW 7: INTERNET & WAN HEALTH =================
 
-    private void showInternetHealth() {
-        currentPage = "Internet & WAN";
-        updateHeading("Internet & WAN Health", "Fleet-Wide Default Gateway, DNS Resolution, and External HTTPS");
-        contentArea.getChildren().clear();
-
+    private List<Node> buildInternetHealth(List<NodeRecord> nodes) {
         VBox card = new VBox(14);
         card.setStyle(getPanelStyle());
         card.setPadding(new Insets(20));
+        card.getChildren().add(createSectionTitle("Agent Internet Access Audit Table"));
 
-        Label head = createSectionTitle("Agent Internet Access Audit Table");
-        card.getChildren().add(head);
-
-        List<NodeRecord> nodes = registry.getAllNodes();
         if (nodes.isEmpty()) {
-            card.getChildren().add(new Label("No nodes connected to test WAN connectivity."));
-        } else {
-            for (NodeRecord n : nodes) {
-                InternetConnectivityMetrics im = n.getInternetMetrics();
-                boolean isOffline = "OFFLINE".equalsIgnoreCase(n.getStatus());
-
-                HBox row = new HBox(16);
-                row.setAlignment(Pos.CENTER_LEFT);
-                row.setPadding(new Insets(12));
-                row.setStyle("-fx-background-color:" + PANEL_ALT + ";-fx-background-radius:6;");
-
-                Label name = new Label(n.getNodeId());
-                name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-weight:bold;");
-
-                Region sp = new Region();
-                HBox.setHgrow(sp, Priority.ALWAYS);
-
-                String gw = (im != null && im.getGatewayIp() != null) ? im.getGatewayIp() : "172.20.10.1";
-                String dns = (im != null && im.getDnsResolutionTimeMs() >= 0) ? (im.getDnsResolutionTimeMs() + " ms")
-                        : "12 ms";
-                String https = (im != null && im.isHttpsSuccess()) ? "HTTPS 200 OK" : "HTTPS 200 OK";
-
-                Label details = new Label("Gateway: " + gw + "  |  DNS: " + dns + "  |  External: " + https);
-                details.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-family:'Consolas', monospace;");
-
-                Label badge = createPillBadge(isOffline ? "• OFFLINE" : "• WAN ONLINE",
-                        isOffline ? RED_ACCENT : GREEN_ACCENT);
-
-                row.getChildren().addAll(name, sp, details, badge);
-                card.getChildren().add(row);
-            }
+            card.getChildren().add(createDetailLabel("No nodes connected to test WAN connectivity."));
         }
+        for (NodeRecord n : nodes) {
+            HBox row = new HBox(16);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.setPadding(new Insets(12));
+            row.setStyle("-fx-background-color:" + PANEL_ALT + ";-fx-background-radius:6;");
 
-        contentArea.getChildren().add(card);
+            Label name = new Label(n.getNodeId());
+            name.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-weight:bold;");
+
+            Region sp = new Region();
+            HBox.setHgrow(sp, Priority.ALWAYS);
+
+            Label details = new Label("Gateway: " + gateway(n) + "  |  DNS: " + dns(n) + "  |  External: " + https(n));
+            details.setStyle("-fx-text-fill:" + CYAN_ACCENT + ";-fx-font-family:'Consolas', monospace;");
+
+            String status = internetStatus(n);
+            row.getChildren().addAll(name, sp, details, createPillBadge("• " + status, internetColor(status)));
+            card.getChildren().add(row);
+        }
+        return List.of(card);
+    }
+
+    private static boolean isInternetMeasured(NodeRecord node) {
+        InternetConnectivityMetrics im = node.getInternetMetrics();
+        return im != null && !FleetSummary.isOffline(node) && im.getStatus() != null
+                && !InternetConnectivityMetrics.STATUS_UNKNOWN.equalsIgnoreCase(im.getStatus());
+    }
+
+    private static String internetStatus(NodeRecord node) {
+        if (FleetSummary.isOffline(node)) {
+            return "NODE OFFLINE";
+        }
+        return isInternetMeasured(node) ? node.getInternetMetrics().getStatus().toUpperCase(Locale.ROOT) : "N/A";
+    }
+
+    private static String internetColor(String status) {
+        return switch (status) {
+            case InternetConnectivityMetrics.STATUS_ONLINE -> GREEN_ACCENT;
+            case InternetConnectivityMetrics.STATUS_LIMITED -> YELLOW_ACCENT;
+            case InternetConnectivityMetrics.STATUS_OFFLINE, "NODE OFFLINE" -> RED_ACCENT;
+            default -> MUTED_TEXT;
+        };
+    }
+
+    private static String gateway(NodeRecord node) {
+        InternetConnectivityMetrics im = node.getInternetMetrics();
+        return isInternetMeasured(node) && im.getGatewayIp() != null && !im.getGatewayIp().isBlank()
+                ? im.getGatewayIp() : "N/A";
+    }
+
+    private static String dns(NodeRecord node) {
+        if (!isInternetMeasured(node)) {
+            return "N/A";
+        }
+        InternetConnectivityMetrics im = node.getInternetMetrics();
+        return im.isDnsSuccess() ? im.getDnsResolutionTimeMs() + " ms" : "FAILED";
+    }
+
+    private static String https(NodeRecord node) {
+        if (!isInternetMeasured(node)) {
+            return "N/A";
+        }
+        InternetConnectivityMetrics im = node.getInternetMetrics();
+        if (im.isHttpsSuccess()) {
+            return "HTTPS " + im.getHttpStatusCode() + " (" + im.getHttpsResponseTimeMs() + " ms)";
+        }
+        return im.getHttpStatusCode() > 0 ? "HTTPS " + im.getHttpStatusCode() + " (FAILED)" : "UNREACHABLE";
     }
 
     // ================= VIEW 8: ALERTS & EVENTS =================
 
-    private void showAlerts() {
-        currentPage = "Alerts";
-        updateHeading("Alerts & Audit Log", "Watchdog Events, Connection Failures, and System Notifications");
-        contentArea.getChildren().clear();
-
-        // Filter Buttons
+    private List<Node> buildAlerts() {
         HBox filterBar = new HBox(10);
         filterBar.getChildren().addAll(
                 createFilterButton("ALL"),
@@ -1533,32 +1315,9 @@ public class PulseNetApp extends Application {
         VBox logBox = new VBox(10);
         logBox.setStyle(getPanelStyle());
         logBox.setPadding(new Insets(20));
-
-        List<String> events = registry.getRecentEvents(100);
-        if (events.isEmpty()) {
-            logBox.getChildren().add(new Label("No events logged yet."));
-        } else {
-            for (int i = events.size() - 1; i >= 0; i--) {
-                String ev = events.get(i);
-                if (!matchesFilter(ev, alertFilter))
-                    continue;
-
-                Label l = new Label("●  " + ev);
-                l.setWrapText(true);
-                String color = GREEN_ACCENT;
-                if (ev.contains("[WARN]"))
-                    color = YELLOW_ACCENT;
-                else if (ev.contains("[LOST]") || ev.contains("[FAIL]"))
-                    color = RED_ACCENT;
-                else if (ev.contains("[SYS]"))
-                    color = CYAN_ACCENT;
-
-                l.setStyle("-fx-text-fill:" + color + ";-fx-font-size:12px;-fx-font-family:'Consolas', monospace;");
-                logBox.getChildren().add(l);
-            }
-        }
-
-        contentArea.getChildren().addAll(filterBar, logBox);
+        logBox.getChildren().addAll(buildEventLabels(registry.getRecentEvents(200), alertFilter,
+                "ALL".equals(alertFilter) ? "No events logged yet." : "No " + alertFilter + " events."));
+        return List.of(filterBar, logBox);
     }
 
     private Button createFilterButton(String filter) {
@@ -1568,139 +1327,239 @@ public class PulseNetApp extends Application {
                 ";-fx-font-weight:bold;-fx-background-radius:6;-fx-cursor:hand;");
         b.setOnAction(e -> {
             alertFilter = filter;
-            showAlerts();
+            refreshCurrentView(registry.getAllNodes());
         });
         return b;
     }
 
     private boolean matchesFilter(String event, String filter) {
-        if ("ALL".equals(filter))
-            return true;
-        if ("CRITICAL".equals(filter))
-            return event.contains("[LOST]") || event.contains("[FAIL]");
-        if ("WARNING".equals(filter))
-            return event.contains("[WARN]");
-        if ("RECOVERY".equals(filter))
-            return event.contains("[REC]") || event.contains("[OK]");
-        if ("SYS".equals(filter))
-            return event.contains("[SYS]");
-        return true;
+        return switch (filter) {
+            case "CRITICAL" -> event.contains("[LOST]") || event.contains("[FAIL]");
+            case "WARNING" -> event.contains("[WARN]");
+            case "RECOVERY" -> event.contains("[REC]") || event.contains("[OK]");
+            case "SYS" -> event.contains("[SYS]");
+            default -> true;
+        };
     }
 
     // ================= VIEW 9: CAPACITY PLANNING =================
 
-    private void showCapacity() {
-        currentPage = "Capacity";
-        updateHeading("Capacity Planning", "Aggregated Cluster Compute, RAM & Storage Headroom");
-        contentArea.getChildren().clear();
-
-        List<NodeRecord> nodes = registry.getAllNodes();
+    private List<Node> buildCapacity(List<NodeRecord> nodes) {
         int totalCores = 0;
+        int reporting = 0;
         long totalRam = 0;
         long usedRam = 0;
         long totalDisk = 0;
-        long usedDisk = 0;
+        long freeDisk = 0;
 
         for (NodeRecord n : nodes) {
             TelemetryPayload p = n.getLatestPayload();
-            if (p != null) {
+            if (p != null && !FleetSummary.isOffline(n) && p.getTotalMemoryBytes() > 0) {
+                reporting++;
                 totalCores += p.getCpuCoreCount();
                 totalRam += p.getTotalMemoryBytes();
                 usedRam += p.getUsedMemoryBytes();
                 totalDisk += p.getTotalDiskBytes();
-                usedDisk += (p.getTotalDiskBytes() - p.getFreeDiskBytes());
+                freeDisk += p.getFreeDiskBytes();
             }
         }
 
-        VBox card = new VBox(16);
-        card.setStyle(getPanelStyle());
-        card.setPadding(new Insets(24));
-
-        card.getChildren().addAll(
-                createSectionTitle("Aggregated Cluster Resources"),
-                createDetailLabel("Total Logical CPU Cores: " + (totalCores > 0 ? totalCores : 12)),
-                createDetailLabel(
-                        String.format(Locale.US, "Cluster RAM: %.2f GB used / %.2f GB total (%.1f%% Allocated)",
-                                usedRam / 1e9, totalRam / 1e9, totalRam > 0 ? (usedRam * 100.0 / totalRam) : 0.0)),
-                createDetailLabel(String.format(Locale.US, "Cluster Disk Storage: %.2f TB used / %.2f TB total",
-                        usedDisk / 1e12, totalDisk / 1e12)),
-                createDetailLabel("Available Memory Headroom: "
-                        + String.format(Locale.US, "%.2f GB", Math.max(0, (totalRam - usedRam) / 1e9))),
-                createDetailLabel("Available Disk Headroom: "
-                        + String.format(Locale.US, "%.2f GB", Math.max(0, (totalDisk - usedDisk) / 1e9))));
-
-        contentArea.getChildren().add(card);
+        VBox card = createCard("Aggregated Cluster Resources",
+                String.format("Online nodes reporting hardware capacity: %d of %d", reporting, nodes.size()),
+                "Total Logical CPU Cores: " + (totalCores > 0 ? totalCores : "N/A"),
+                "Cluster RAM: " + (totalRam > 0 ? String.format(Locale.US, "%s used / %s total (%.1f%% Allocated)",
+                        formatGb(usedRam, totalRam), formatGb(totalRam, totalRam), usedRam * 100.0 / totalRam) : "N/A"),
+                "Cluster Disk Storage: " + (totalDisk > 0 ? formatGb(totalDisk - freeDisk, totalDisk) + " used / "
+                        + formatGb(totalDisk, totalDisk) + " total" : "N/A"),
+                "Available Memory Headroom: " + formatGb(totalRam - usedRam, totalRam),
+                "Available Disk Headroom: " + formatGb(freeDisk, totalDisk));
+        return List.of(card);
     }
 
     // ================= VIEW 10: SLA REPORTS =================
 
-    private void showReports() {
-        currentPage = "SLA Reports";
-        updateHeading("SLA & System Reports", "Availability Percentages, Recovery Times & Protocol Specs");
-        contentArea.getChildren().clear();
+    private List<Node> buildReports(List<NodeRecord> nodes) {
+        FleetSummary fleet = FleetSummary.of(nodes);
 
-        List<NodeRecord> nodes = registry.getAllNodes();
-        long onlineCount = nodes.stream().filter(n -> !"OFFLINE".equalsIgnoreCase(n.getStatus())).count();
-        double sla = nodes.isEmpty() ? 100.0 : (onlineCount * 100.0 / nodes.size());
+        VBox card = createCard("Infrastructure Availability",
+                "Nodes online now: " + (fleet.total() > 0
+                        ? String.format(Locale.US, "%.2f%%", fleet.online() * 100.0 / fleet.total()) : "N/A"),
+                "Total Registered Fleet: " + fleet.total() + " Devices",
+                "Active Online Agents: " + fleet.online() + " (" + fleet.warnings() + " with warnings)",
+                "Offline Agents: " + fleet.offline());
 
-        VBox card = new VBox(16);
-        card.setStyle(getPanelStyle());
-        card.setPadding(new Insets(24));
+        List<String> lines = new ArrayList<>();
+        for (NodeRecord n : nodes) {
+            NodeHistory history = nodeHistories.get(n.getNodeId());
+            lines.add(n.getNodeId() + ": " + (history != null ? String.format(Locale.US, "%.2f%%",
+                    history.availabilityPercent()) : "N/A"));
+        }
+        if (lines.isEmpty()) {
+            lines.add("No nodes observed yet.");
+        }
+        VBox perNode = createCard("Measured availability per node (since it first connected to this window)",
+                lines.toArray(new String[0]));
 
-        card.getChildren().addAll(
-                createSectionTitle("Infrastructure SLA Compliance"),
-                createDetailLabel(String.format(Locale.US, "Cluster SLA Availability: %.2f%%", sla)),
-                createDetailLabel("Total Registered Fleet: " + nodes.size() + " Devices"),
-                createDetailLabel("Active Online Agents: " + onlineCount),
-                createDetailLabel("Offline / Degraded Agents: " + (nodes.size() - onlineCount)),
-                new Separator(),
-                createSectionTitle("Wire Protocol Framing Specification"),
-                createDetailLabel(
-                        "TCP Framing: Low-Level BSD Socket with 4-byte signed Big-Endian integer length prefix."),
-                createDetailLabel(
-                        "UDP Probes: 100ms interval UDP echo probes with sequence numbering & microsecond timestamps."),
-                createDetailLabel("Watchdog Audit: 15-second heartbeat isolation window for lagging nodes."));
-
-        contentArea.getChildren().add(card);
+        VBox protocol = createCard("Wire Protocol Framing Specification",
+                "TCP Framing: Low-Level BSD Socket with 4-byte signed Big-Endian integer length prefix.",
+                "UDP Probes: 1-second interval echo probes with sequence numbers and a 50-probe loss window.",
+                String.format(Locale.US, "Watchdog Audit: nodes silent for more than %.1f seconds are marked OFFLINE.",
+                        options.watchdogTimeout()));
+        return List.of(card, perNode, protocol);
     }
 
     // ================= VIEW 11: SETTINGS & PORTS =================
 
-    private void showSettings() {
-        currentPage = "Settings";
-        updateHeading("Settings & Ports", "Server Configuration, Listening Endpoints & Local Interfaces");
-        contentArea.getChildren().clear();
+    private List<Node> buildSettings() {
+        VBox config = createCard("Active Server Configuration",
+                "Server Bind Address: " + options.host(),
+                "TCP Telemetry Port: " + options.tcpPort() + state(server.isRunning(), "Listening"),
+                "UDP Discovery Port: " + options.discoveryPort() + state(discoveryServer.isRunning(), "Advertising"),
+                "UDP Network Probe Port: " + options.probePort() + state(probeServer.isRunning(), "Echoing"),
+                "Open agent connections: " + server.getActiveConnectionCount() + " of " + server.getMaxConnections(),
+                "Watchdog Audit Timeout: " + options.watchdogTimeout() + " seconds",
+                "Server Identifier: " + options.serverId());
 
-        VBox card = new VBox(14);
-        card.setStyle(getPanelStyle());
-        card.setPadding(new Insets(24));
+        List<String> lines = new ArrayList<>();
+        for (LanAddress la : lanAddresses) {
+            lines.add(String.format("•  %s: %s  (Adapter: %s)", la.label(), la.address(), la.displayName()));
+        }
+        if (lines.isEmpty()) {
+            lines.add("•  127.0.0.1 (loopback only: this computer is not on a network)");
+        }
+        lines.add("Agents: java -jar pulsenet.jar agent --discover      or      java -jar pulsenet.jar agent --host "
+                + connectAddress().replace(":", " --port "));
+        lines.add("Other laptops cannot connect? Run scripts\\open-firewall.ps1 as Administrator on this computer.");
+        return List.of(config, createCard("Detected LAN IP Addresses (For Agents)", lines.toArray(new String[0])));
+    }
 
-        card.getChildren().addAll(
-                createSectionTitle("Active Server Configuration"),
-                createDetailLabel("Server Bind Address: " + DEFAULT_HOST),
-                createDetailLabel("TCP Telemetry Port: " + tcpPort + " (Active / Listening)"),
-                createDetailLabel("UDP Discovery Port: " + udpDiscoveryPort + " (Active / Advertising)"),
-                createDetailLabel("UDP Network Probe Port: " + udpProbePort + " (Active / Echoing)"),
-                createDetailLabel("Watchdog Audit Timeout: " + DEFAULT_WATCHDOG_TIMEOUT + " seconds"),
-                createDetailLabel("Server Identifier: " + serverId),
-                new Separator(),
-                createSectionTitle("Detected Reachable LAN IP Addresses (For Agents):"));
+    private static String state(boolean running, String activity) {
+        return running ? " (Active / " + activity + ")" : " (NOT AVAILABLE)";
+    }
 
-        try {
-            List<LanAddress> addresses = NetworkUtils.listLanIPv4Addresses();
-            if (addresses.isEmpty()) {
-                card.getChildren().add(createDetailLabel("  • 127.0.0.1 (Loopback only)"));
-            } else {
-                for (LanAddress la : addresses) {
-                    card.getChildren().add(createDetailLabel(String.format("  • %s: %s (Adapter: %s)",
-                            la.label(), la.address(), la.displayName())));
-                }
+    // ================= NODE TEXT HELPERS =================
+
+    private static String statusColor(NodeRecord node) {
+        if (FleetSummary.isOffline(node)) {
+            return RED_ACCENT;
+        }
+        return "WARNING".equalsIgnoreCase(node.getStatus()) ? YELLOW_ACCENT : GREEN_ACCENT;
+    }
+
+    private Label createStatusBadge(NodeRecord node) {
+        return createPillBadge("• " + (FleetSummary.isOffline(node) ? "OFFLINE" : node.getStatus()), statusColor(node));
+    }
+
+    private static String address(NodeRecord node) {
+        String address = node.getRemoteAddress();
+        if (address == null || address.isBlank()) {
+            return "unknown";
+        }
+        return address.startsWith("/") ? address.substring(1) : address;
+    }
+
+    private static String lastSeen(NodeRecord node) {
+        long seconds = Math.max(0, (System.currentTimeMillis() - node.getLastSeenTimestamp()) / 1000);
+        return seconds < 60 ? seconds + " s ago" : formatUptime(seconds) + " ago";
+    }
+
+    /** Marks figures of an offline node as old. */
+    private static String staleNote(NodeRecord node) {
+        return FleetSummary.isOffline(node) ? "   •   Last seen " + lastSeen(node) + " (showing last known values)" : "";
+    }
+
+    private static String cores(TelemetryPayload p) {
+        return p != null && p.getCpuCoreCount() > 0 ? String.valueOf(p.getCpuCoreCount()) : "N/A";
+    }
+
+    private static String temperature(TelemetryPayload p) {
+        return p != null && p.getCpuTemperatureCelsius() > 0
+                ? String.format(Locale.US, "%.1f °C", p.getCpuTemperatureCelsius()) : "Unavailable";
+    }
+
+    private static String battery(NodeRecord node) {
+        TelemetryPayload p = node.getLatestPayload();
+        if (p == null || FleetSummary.isOffline(node)) {
+            return "N/A";
+        }
+        return p.isBatteryAvailable() && p.getBatteryPercent() >= 0
+                ? String.format(Locale.US, "%.1f%% (%s)", p.getBatteryPercent(),
+                        p.isBatteryCharging() ? "Charging" : "Not charging")
+                : "Unavailable";
+    }
+
+    private static String lossColor(double loss) {
+        return Double.isNaN(loss) ? MUTED_TEXT : loss > 0 ? RED_ACCENT : GREEN_ACCENT;
+    }
+
+    /** @return the size in GB, or N/A if {@code total} shows that the node does not report it */
+    private static String formatGb(long bytes, long total) {
+        return total > 0 ? String.format(Locale.US, "%.2f GB", Math.max(0, bytes) / (double) (1L << 30)) : "N/A";
+    }
+
+    private static String formatPercent(double percent) {
+        return Double.isNaN(percent) ? "N/A" : String.format(Locale.US, "%.1f%%", percent);
+    }
+
+    private static void setTextColor(Label label, String color) {
+        String style = label.getStyle().replaceAll("-fx-text-fill:[^;]*;", "-fx-text-fill:" + color + ";");
+        if (!style.equals(label.getStyle())) {
+            label.setStyle(style);
+        }
+    }
+
+    // ================= TREND CHART =================
+
+    /** A titled line chart of the most recent samples; seconds without a measurement are left out. */
+    private final class TrendChart {
+
+        private final VBox box = new VBox(8);
+        private final List<XYChart.Series<Number, Number>> seriesList = new ArrayList<>();
+
+        TrendChart(String title, String yLabel, boolean percent, double height, String... seriesNames) {
+            box.setStyle(getPanelStyle());
+            box.setPadding(new Insets(14));
+            // Equal shares of the row, whatever the axis labels measure
+            box.setMinWidth(0);
+            box.setPrefWidth(400);
+            HBox.setHgrow(box, Priority.ALWAYS);
+
+            Label heading = new Label(title);
+            heading.setStyle("-fx-text-fill:" + WHITE_TEXT + ";-fx-font-size:13px;-fx-font-weight:bold;");
+
+            NumberAxis x = new NumberAxis(-NodeHistory.CAPACITY, 0, 10);
+            x.setLabel("Seconds (0 = now)");
+            NumberAxis y = percent ? new NumberAxis(0, 100, 20) : new NumberAxis();
+            y.setLabel(yLabel);
+            LineChart<Number, Number> chart = new LineChart<>(x, y);
+            chart.setAnimated(false);
+            chart.setCreateSymbols(false);
+            chart.setVerticalZeroLineVisible(false);
+            chart.setLegendVisible(seriesNames.length > 1);
+            chart.setPrefHeight(height);
+            chart.setMinHeight(height);
+            for (String name : seriesNames) {
+                XYChart.Series<Number, Number> series = new XYChart.Series<>();
+                series.setName(name);
+                seriesList.add(series);
+                chart.getData().add(series);
             }
-        } catch (Exception ex) {
-            card.getChildren().add(createDetailLabel("  • IP Detection Error: " + ex.getMessage()));
+            box.getChildren().addAll(heading, chart);
         }
 
-        contentArea.getChildren().add(card);
+        /** Shows one metric per series, in order. */
+        void update(NodeHistory history, Metric... metrics) {
+            for (int s = 0; s < metrics.length; s++) {
+                double[] values = history.values(metrics[s]);
+                List<XYChart.Data<Number, Number>> points = new ArrayList<>(values.length);
+                for (int i = 0; i < values.length; i++) {
+                    if (!Double.isNaN(values[i])) {
+                        points.add(new XYChart.Data<>(i - (values.length - 1), values[i]));
+                    }
+                }
+                seriesList.get(s).getData().setAll(points);
+            }
+        }
     }
 
     // ================= UI HELPER FACTORIES =================
@@ -1716,10 +1575,13 @@ public class PulseNetApp extends Application {
         top.setAlignment(Pos.CENTER_LEFT);
         Label head = new Label(title);
         head.setStyle("-fx-text-fill:" + MUTED_TEXT + ";-fx-font-size:11px;-fx-font-weight:bold;");
+        head.setWrapText(true);
+        head.setMinHeight(Region.USE_PREF_SIZE);
         Region gap = new Region();
         HBox.setHgrow(gap, Priority.ALWAYS);
         Label sym = new Label(icon);
         sym.setStyle("-fx-text-fill:" + accent + ";-fx-font-size:14px;");
+        sym.setMinWidth(Region.USE_PREF_SIZE);
         top.getChildren().addAll(head, gap, sym);
 
         Label value = new Label(defaultVal);
@@ -1727,6 +1589,8 @@ public class PulseNetApp extends Application {
 
         Label foot = new Label(footer);
         foot.setStyle("-fx-text-fill:" + SUBTLE_TEXT + ";-fx-font-size:10px;");
+        foot.setWrapText(true);
+        foot.setMinHeight(Region.USE_PREF_SIZE);
 
         card.getChildren().addAll(top, value, foot);
         row.getChildren().add(card);
@@ -1805,10 +1669,11 @@ public class PulseNetApp extends Application {
     }
 
     private void setDonutPercent(Circle arc, Label value, double percent) {
-        double p = Math.max(0, Math.min(100, Double.isFinite(percent) ? percent : 0));
+        double p = Math.max(0, Math.min(100, Double.isNaN(percent) ? 0 : percent));
         double circumference = 2 * Math.PI * 44;
         arc.getStrokeDashArray().setAll(circumference * p / 100, circumference);
-        value.setText(String.format(Locale.US, "%.0f%%", p));
+        arc.setVisible(p > 0); // a zero-length dash with round caps would still paint a dot
+        value.setText(Double.isNaN(percent) ? "N/A" : String.format(Locale.US, "%.0f%%", p));
     }
 
     private Label createPillBadge(String text, String color) {
@@ -1857,42 +1722,6 @@ public class PulseNetApp extends Application {
                 + ";-fx-border-radius:12;";
     }
 
-    private void initSeriesPoints(XYChart.Series<Number, Number> series, List<Double> history) {
-        if (series == null)
-            return;
-        series.getData().clear();
-        for (int i = 0; i < MAX_CHART_HISTORY; i++) {
-            double val = 0.0;
-            if (history != null && !history.isEmpty()) {
-                int offset = history.size() - MAX_CHART_HISTORY + i;
-                if (offset >= 0 && offset < history.size()) {
-                    val = history.get(offset);
-                }
-            }
-            series.getData().add(new XYChart.Data<>(i, val));
-        }
-    }
-
-    private void pushChartValue(XYChart.Series<Number, Number> series, List<Double> history, double value) {
-        if (history != null) {
-            history.add(value);
-            if (history.size() > MAX_CHART_HISTORY * 2) {
-                history.remove(0);
-            }
-        }
-        if (series == null)
-            return;
-        javafx.collections.ObservableList<XYChart.Data<Number, Number>> data = series.getData();
-        if (data.size() < MAX_CHART_HISTORY) {
-            initSeriesPoints(series, history);
-            return;
-        }
-        for (int i = 0; i < MAX_CHART_HISTORY - 1; i++) {
-            data.get(i).setYValue(data.get(i + 1).getYValue());
-        }
-        data.get(MAX_CHART_HISTORY - 1).setYValue(value);
-    }
-
     private String formatSpeed(double bytesPerSec) {
         if (bytesPerSec >= 1_000_000.0) {
             return String.format(Locale.US, "%.2f MB/s", bytesPerSec / 1_000_000.0);
@@ -1915,7 +1744,9 @@ public class PulseNetApp extends Application {
         }
     }
 
-    private String formatUptime(long seconds) {
+    private static String formatUptime(long seconds) {
+        if (seconds <= 0)
+            return "N/A";
         long days = seconds / 86400;
         long hours = (seconds % 86400) / 3600;
         long mins = (seconds % 3600) / 60;
@@ -1927,26 +1758,13 @@ public class PulseNetApp extends Application {
     }
 
     private String formatMs(double ms) {
-        if (ms < 0)
+        if (!(ms >= 0)) // negative or NaN: not measured
             return "N/A";
         return String.format(Locale.US, "%.1f ms", ms);
     }
 
     private String safe(String s) {
         return (s == null || s.isBlank()) ? "N/A" : s;
-    }
-
-    // ================= REFRESH LOOP DISPATCHER =================
-
-    private void refreshCurrentView() {
-        if ("Overview".equals(currentPage))
-            refreshOverview();
-        else if ("Nodes".equals(currentPage))
-            refreshServerFleet();
-        else if ("Node Details".equals(currentPage))
-            refreshNodeDetails();
-        else if ("Network Fleet".equals(currentPage))
-            refreshNetworkFleet();
     }
 
     // ================= SHUTDOWN =================
@@ -1963,6 +1781,8 @@ public class PulseNetApp extends Application {
 
         if (refreshTimeline != null)
             refreshTimeline.stop();
+        if (lanScanner != null)
+            lanScanner.shutdownNow();
         if (watchdog != null)
             watchdog.stop();
         if (discoveryServer != null)
@@ -1976,6 +1796,11 @@ public class PulseNetApp extends Application {
     }
 
     public static void main(String[] args) {
+        if (UiOptions.wantsHelp(args)) {
+            UiOptions.printUsage();
+            return;
+        }
+        UiOptions.parse(args); // reports invalid options before any window opens
         launch(args);
     }
 }

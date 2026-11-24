@@ -1,5 +1,6 @@
 package com.pulsenet.server;
 
+import com.pulsenet.common.cli.CliArgs;
 import com.pulsenet.common.net.NetworkUtils;
 import com.pulsenet.common.net.NetworkUtils.LanAddress;
 import com.pulsenet.server.dashboard.DashboardRenderer;
@@ -49,33 +50,33 @@ public class ServerMain {
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--host":
-                    if (i + 1 < args.length) host = args[++i];
+                    host = CliArgs.text(args, i++);
                     break;
                 case "--port":
-                    if (i + 1 < args.length) port = Integer.parseInt(args[++i]);
+                    port = CliArgs.port(args, i++);
                     break;
                 case "--udp-port":
-                    if (i + 1 < args.length) udpPort = Integer.parseInt(args[++i]);
+                    udpPort = CliArgs.port(args, i++);
                     break;
                 case "--probe-port":
                 case "--udp-probe-port":
-                    if (i + 1 < args.length) probePort = Integer.parseInt(args[++i]);
+                    probePort = CliArgs.port(args, i++);
                     break;
                 case "--server-id":
-                    if (i + 1 < args.length) serverId = args[++i];
+                    serverId = CliArgs.text(args, i++);
                     break;
                 case "--disable-discovery":
                 case "--no-discovery":
                     enableDiscovery = false;
                     break;
                 case "--timeout":
-                    if (i + 1 < args.length) timeoutSeconds = Integer.parseInt(args[++i]);
+                    timeoutSeconds = (int) CliArgs.number(args, i++, 1, Integer.MAX_VALUE);
                     break;
                 case "--watchdog-timeout":
-                    if (i + 1 < args.length) watchdogTimeout = Double.parseDouble(args[++i]);
+                    watchdogTimeout = CliArgs.decimal(args, i++, 0.5, 86_400);
                     break;
                 case "--read-timeout":
-                    if (i + 1 < args.length) readTimeoutSeconds = Double.parseDouble(args[++i]);
+                    readTimeoutSeconds = CliArgs.decimal(args, i++, 0, 86_400);
                     break;
                 case "--headless":
                     headless = true;
@@ -177,6 +178,7 @@ public class ServerMain {
                     if (discoveryServer != null) {
                         discoveryServer.stop();
                     }
+                    probeServer.stop();
                     server.stop();
                 }
             } else {
@@ -198,7 +200,7 @@ public class ServerMain {
      * @param watchdogTimeout    watchdog timeout in seconds
      * @return the explicit value, or {@code max(3 x watchdogTimeout, 15 s)}, in milliseconds
      */
-    static long resolveReadTimeoutMillis(double readTimeoutSeconds, double watchdogTimeout) {
+    public static long resolveReadTimeoutMillis(double readTimeoutSeconds, double watchdogTimeout) {
         if (readTimeoutSeconds >= 0) {
             return Math.round(readTimeoutSeconds * 1000.0);
         }
@@ -333,7 +335,7 @@ public class ServerMain {
         System.out.println("  --port <port>            Listener TCP port (default: 9000)");
         System.out.println("  --udp-port <port>        UDP discovery port (default: 9001)");
         System.out.println("  --probe-port <port>      UDP network probe port (default: 9002)");
-        System.out.println("  --server-id <id>         Logical server identifier (default: pulsenet-central-server)");
+        System.out.println("  --server-id <id>         Logical server identifier (default: derived from hostname)");
         System.out.println("  --disable-discovery      Disable UDP auto-discovery responder");
         System.out.println("  --timeout <seconds>      Run for N seconds then shut down cleanly");
         System.out.println("  --watchdog-timeout <sec> Seconds of silence before marking node OFFLINE (default: 5.0)");
